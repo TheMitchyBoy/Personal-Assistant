@@ -6,8 +6,16 @@ loadDotenv();
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-/** Absolute path to the SQLite database file. */
-export const DB_PATH = path.resolve(__dirname, "..", "data", "operator.db");
+/**
+ * Absolute path to the SQLite database file.
+ *
+ * Defaults to `<project>/data/operator.db`. On hosts with an ephemeral
+ * filesystem (e.g. Railway), set `DATABASE_PATH` to a path on a mounted
+ * persistent volume, e.g. `/data/operator.db`, so the DB survives redeploys.
+ */
+export const DB_PATH = process.env.DATABASE_PATH
+  ? path.resolve(process.env.DATABASE_PATH)
+  : path.resolve(__dirname, "..", "data", "operator.db");
 
 export interface Config {
   telegramBotToken: string;

@@ -87,6 +87,7 @@ TELEGRAM_CHAT_ID=123456789              # your numeric chat id
 DAILY_TIME=07:30                        # 24h local time for the daily nudge
 TZ=America/Chicago                      # for cron correctness
 ANTHROPIC_API_KEY=                      # Phase 2 only — leave blank
+DATABASE_PATH=                          # optional; leave blank locally (defaults to data/operator.db)
 ```
 
 ## Run
@@ -139,6 +140,60 @@ jobs:
 > Note: GitHub Actions has an ephemeral filesystem, so the SQLite file does not
 > persist between runs there. For a persistent DB use the long-running process
 > on a host like Railway/Fly, or commit/restore the DB as a workflow artifact.
+
+## Deploy to Railway (recommended host)
+
+Operator is a long-running worker (no HTTP server, no inbound port needed — the
+Telegram bot uses long polling). [Railway](https://railway.com) runs this kind
+of process well. The repo ships a `railway.json` so the service builds with
+Nixpacks and runs `npm start` with an automatic restart-on-failure policy.
+
+**The one thing you must not skip:** Railway's filesystem is ephemeral and is
+wiped on every redeploy. Attach a **persistent volume** and point the database
+at it, or you'll lose your projects on each deploy.
+
+### Steps
+
+1. **Create the service.** In Railway, *New Project → Deploy from GitHub repo*
+   and pick this repo. Railway detects `railway.json` and Node automatically.
+   (CLI alternative: `npm i -g @railway/cli`, then `railway login` and
+   `railway up` from the repo root.)
+2. **Add a persistent volume.** On the service: *Settings → Volumes → Add
+   Volume*, mount path `/data`. This directory now survives redeploys.
+3. **Set environment variables.** On the service *Variables* tab, add:
+
+   ```ini
+   TELEGRAM_BOT_TOKEN=123456789:AAE...   # from @BotFather
+   TELEGRAM_CHAT_ID=123456789            # your numeric chat id
+   DAILY_TIME=07:30                      # local time of the daily nudge
+   TZ=America/Chicago                    # MUST match DAILY_TIME's locale
+   DATABASE_PATH=/data/operator.db       # <-- points the DB at the volume
+   # ANTHROPIC_API_KEY=                  # Phase 2 only, leave unset
+   ```
+
+   `DATABASE_PATH` must live under the volume mount path (`/data`). The DB and
+   its schema/seed are created automatically on first boot.
+4. **Deploy.** Railway builds and starts the worker. Check the deploy logs for:
+
+   ```
+   [db] ready
+   [scheduler] daily nudge scheduled at 07:30 (America/Chicago) [cron: "30 7 * * *"]
+   [bot] online and listening for commands
+   ```
+
+   Then message your bot `/today` to confirm it responds.
+
+### Notes & gotchas
+
+- **`TZ` matters.** `node-cron` fires `DAILY_TIME` in the `TZ` you set, so make
+  sure they agree (e.g. `07:30` + `America/Chicago`).
+- **One replica only.** Keep `numReplicas: 1` (already set in `railway.json`).
+  Two instances would double-send the daily message and both long-poll the same
+  bot. SQLite is single-file and not meant for concurrent writers either.
+- **No public domain needed.** Don't bother generating a domain or exposing a
+  port — this service doesn't listen for HTTP.
+- **`better-sqlite3`** ships prebuilt binaries, so it installs on Railway's
+  Linux image without a compile step in the common case.
 
 ## Telegram commands
 
