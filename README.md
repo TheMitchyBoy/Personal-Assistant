@@ -197,6 +197,10 @@ operator/
 
 ## Data model
 
+> See [`docs/DATABASE.md`](docs/DATABASE.md) for how storage works, the
+> SQLite-vs-Postgres rationale, and the database roadmap (backups, migrations,
+> Phase 2/3 tables, and other future ideas).
+
 Table `projects`:
 
 | column | type | notes |
