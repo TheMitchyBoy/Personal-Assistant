@@ -2,6 +2,7 @@ import { loadConfig } from "./config.js";
 import { initDb, closeDb } from "./db.js";
 import { createBot } from "./bot.js";
 import { startScheduler, startCheckinScheduler } from "./scheduler.js";
+import { createReminderService } from "./reminders.js";
 import { startServer } from "./server.js";
 
 async function main(): Promise<void> {
@@ -10,15 +11,23 @@ async function main(): Promise<void> {
   initDb();
   console.log("[db] ready");
 
-  const { bot, sendDailyMessage, sendCheckinMessage } = createBot(config);
+  const { bot, sendDailyMessage, sendCheckinMessage, sendNotification } =
+    createBot(config);
 
   startScheduler(config, sendDailyMessage);
   startCheckinScheduler(config, sendCheckinMessage);
 
+  // Reminder scheduler: delivers one-off + recurring notifications the agent
+  // (or the API) schedules. It survives restarts because reminders persist in
+  // SQLite and are re-armed here on boot.
+  const reminders = createReminderService(config, sendNotification);
+  reminders.start();
+
   // Always start the web server (Railway needs a listening port for its domain).
   // The API stays fully locked until DASHBOARD_PASSWORD is set — without it,
   // every /api route returns 503 and no data is served, so this is safe.
-  startServer(config);
+  // The AI agent gets notification + scheduling tools via these deps.
+  startServer(config, { notifier: sendNotification, reminders });
   if (!config.dashboardPassword) {
     console.log(
       "[web] DASHBOARD_PASSWORD not set — dashboard is locked. Set it to log in and use the dashboard/AI agent."
@@ -88,6 +97,11 @@ async function main(): Promise<void> {
   const shutdown = (signal: string) => {
     console.log(`\n[manoverboard] received ${signal}, shutting down...`);
     if (onlineTimer) clearTimeout(onlineTimer);
+    try {
+      reminders.stop();
+    } catch {
+      // Reminder tasks may not be running — fine.
+    }
     try {
       bot.stop(signal);
     } catch {

@@ -21,10 +21,13 @@ import {
   type ProjectStatus,
   type ProjectType,
 } from "./db.js";
-import { chat, isAiConfigured, type ChatMessage } from "./ai.js";
+import { chat, isAiConfigured, type AgentDeps, type ChatMessage } from "./ai.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.resolve(__dirname, "..", "public");
+
+/** Runtime capabilities handed to the web server (notifications/scheduling). */
+export type ServerDeps = AgentDeps;
 
 /** Constant-time string comparison that doesn't leak length via early return. */
 function safeEqual(a: string, b: string): boolean {
@@ -154,7 +157,7 @@ function parseId(req: Request): number | null {
 }
 
 /** Build the Express app. Caller is responsible for listen(). */
-export function createServer(config: Config): express.Express {
+export function createServer(config: Config, deps: ServerDeps = {}): express.Express {
   const app = express();
   app.use(express.json());
 
@@ -275,13 +278,52 @@ export function createServer(config: Config): express.Express {
       return res.status(400).json({ error: "no valid messages" });
     }
     try {
-      const reply = await chat(config, messages);
+      const reply = await chat(config, messages, deps);
       res.json({ reply });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       console.error("[ai] chat failed:", msg);
       res.status(502).json({ error: `AI request failed: ${msg}` });
     }
+  });
+
+  // --- Scheduled Telegram notifications ---
+  api.get("/reminders", (_req, res) => {
+    if (!deps.reminders) {
+      return res.status(501).json({ error: "Scheduling not available." });
+    }
+    res.json(deps.reminders.listPending());
+  });
+
+  api.post("/reminders", (req, res) => {
+    if (!deps.reminders) {
+      return res.status(501).json({ error: "Scheduling not available." });
+    }
+    const body = req.body ?? {};
+    const message = toNullableString(body.message);
+    if (!message) return res.status(400).json({ error: "message is required" });
+    try {
+      const reminder = deps.reminders.schedule({
+        message,
+        when: toNullableString(body.when),
+        repeatCron: toNullableString(body.repeat_cron),
+        source: "api",
+      });
+      res.status(201).json(reminder);
+    } catch (err) {
+      res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  api.delete("/reminders/:id", (req, res) => {
+    if (!deps.reminders) {
+      return res.status(501).json({ error: "Scheduling not available." });
+    }
+    const id = parseId(req);
+    if (id === null || !deps.reminders.cancel(id)) {
+      return res.status(404).json({ error: "Not found" });
+    }
+    res.json({ ok: true });
   });
 
   app.use("/api", api);
@@ -291,8 +333,8 @@ export function createServer(config: Config): express.Express {
 }
 
 /** Start the web dashboard listening on config.port. */
-export function startServer(config: Config): void {
-  const app = createServer(config);
+export function startServer(config: Config, deps: ServerDeps = {}): void {
+  const app = createServer(config, deps);
   app.listen(config.port, () => {
     console.log(`[web] dashboard listening on port ${config.port}`);
   });

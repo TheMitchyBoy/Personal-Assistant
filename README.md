@@ -238,6 +238,7 @@ ignored.
 | `/done {id}` | Mark the current next action complete (stamps progress), then prompt for the new one |
 | `/progress {id} [note]` | Log progress without changing the next action — resets the stall clock; an optional note is saved to `daily_log` |
 | `/status {id} {status}` | Update status (`idea`/`active`/`blocked`/`shipped`/`paid`/`archived`) |
+| `/reminders` | List pending scheduled notifications (one-off + recurring) the assistant set up |
 | `/skip` | Skip the evening check-in (reply to the check-in prompt) |
 | `/cancel` | Abort an in-progress `/add` or `/done` follow-up |
 
@@ -273,10 +274,18 @@ state.
 - **Opt-in.** The agent is enabled only when `ANTHROPIC_API_KEY` is set;
   otherwise the Assistant tab shows a "not configured" notice. Model defaults to
   `claude-sonnet-4-6` and is overridable via `ANTHROPIC_MODEL`.
-- **Read-only context.** The agent reasons over your data and gives concrete,
+- **Live context.** The agent reasons over your data and gives concrete,
   time-aware advice (it doesn't edit projects itself — you do that on the Manage
   tab). Ask things like "what should I focus on tonight?", "rank my fast
   projects and sharpen each next action", or "which projects are stalling?".
+- **Sends & schedules Telegram notifications.** The agent has tools to push a
+  message to your Telegram chat now, or to schedule one for later — a single
+  reminder at a specific time ("ping me at 9pm to send Joe's invoice") or a
+  recurring one ("every weekday at 9am, tell me my top priority"). It converts
+  natural-language times into a concrete schedule using your `TZ`. Scheduled
+  notifications are persisted in SQLite (the `reminders` table) and survive
+  restarts; view them with `/reminders` in Telegram or the `GET /api/reminders`
+  endpoint, and ask the agent to cancel any of them.
 - Conversation history is kept in the browser session (not persisted
   server-side) and the most recent turns are sent with each request.
 
@@ -297,6 +306,9 @@ API (all require the `x-dashboard-password` header):
 | `PATCH /api/goals/:id` · `DELETE /api/goals/:id` | Edit / delete a goal |
 | `GET /api/chat/status` | Whether the AI agent is enabled + its model |
 | `POST /api/chat` | Send `{ messages: [{role, content}] }`, get `{ reply }` |
+| `GET /api/reminders` | List pending scheduled Telegram notifications |
+| `POST /api/reminders` | Schedule one — `{ message, when }` (one-off ISO 8601) or `{ message, repeat_cron }` (recurring) |
+| `DELETE /api/reminders/:id` | Cancel a pending scheduled notification |
 
 ## Daily message format
 
@@ -351,10 +363,11 @@ operator/
     db.ts          # schema init, seed, typed query helpers
     scoring.ts     # score() + allocateDay()
     messages.ts    # daily message + list formatting (shared by bot & scheduler)
-    bot.ts         # telegraf commands (incl. /progress, /skip, check-in reply)
+    bot.ts         # telegraf commands (incl. /progress, /skip, /reminders, check-in reply)
     scheduler.ts   # node-cron -> daily nudge + evening check-in
-    server.ts      # express API for the web dashboard (auth + projects/goals CRUD + chat)
-    ai.ts          # AI chat agent: live-context system prompt + Anthropic call
+    reminders.ts   # node-cron -> agent-scheduled Telegram notifications (one-off + recurring)
+    server.ts      # express API for the web dashboard (auth + projects/goals CRUD + chat + reminders)
+    ai.ts          # AI chat agent: live-context system prompt + Anthropic call + notification tools
     config.ts      # load + validate env
     index.ts       # boot: init db, start bot, schedulers, web server
     daily.ts       # one-shot allocation + send + exit (npm run daily)
@@ -412,6 +425,21 @@ Table `goals` (edited from the web dashboard):
 | `detail` | TEXT | nullable |
 | `created_at` | TEXT | ISO datetime |
 | `updated_at` | TEXT | ISO datetime |
+
+Table `reminders` (scheduled Telegram notifications set up by the AI agent / API):
+
+| column | type | notes |
+| --- | --- | --- |
+| `id` | INTEGER | PK autoincrement |
+| `message` | TEXT | the text delivered to Telegram |
+| `due_at` | TEXT | ISO datetime (UTC) for a one-off; null for recurring |
+| `cron` | TEXT | 5-field cron expression (in `TZ`) for recurring; null for one-off |
+| `recurring` | INTEGER | `0` one-off, `1` recurring |
+| `status` | TEXT | `pending` / `sent` / `cancelled` |
+| `source` | TEXT | who created it (e.g. `agent`, `api`); nullable |
+| `created_at` | TEXT | ISO datetime |
+| `sent_at` | TEXT | when a one-off was delivered; nullable |
+| `last_run_at` | TEXT | last delivery for a recurring reminder; nullable |
 
 ## Roadmap (not built yet)
 

@@ -57,6 +57,35 @@ export interface Goal {
   updated_at: string;
 }
 
+export type ReminderStatus = "pending" | "sent" | "cancelled";
+
+/**
+ * A Telegram notification the AI agent (or anything else) wants delivered. A
+ * one-off has `due_at` set and `cron` null; a recurring reminder has `cron` set
+ * (an expression evaluated in the configured timezone) and `due_at` null.
+ */
+export interface Reminder {
+  id: number;
+  message: string;
+  due_at: string | null; // ISO datetime (UTC) for one-off reminders
+  cron: string | null; // cron expression (in config.tz) for recurring reminders
+  recurring: number; // 0 = one-off, 1 = recurring
+  status: ReminderStatus;
+  source: string | null; // who created it, e.g. "agent" or "api"
+  created_at: string;
+  sent_at: string | null; // when a one-off was delivered
+  last_run_at: string | null; // last delivery for recurring reminders
+}
+
+/** Fields a caller may provide when scheduling a reminder. */
+export interface NewReminder {
+  message: string;
+  due_at?: string | null;
+  cron?: string | null;
+  recurring?: boolean;
+  source?: string | null;
+}
+
 /** Project columns that may be edited from the dashboard. */
 export const PROJECT_EDITABLE_COLUMNS = [
   "name",
@@ -138,6 +167,22 @@ CREATE TABLE IF NOT EXISTS app_meta (
 );
 `;
 
+const REMINDERS_SCHEMA = `
+CREATE TABLE IF NOT EXISTS reminders (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  message TEXT NOT NULL,
+  due_at TEXT,
+  cron TEXT,
+  recurring INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'pending'
+    CHECK (status IN ('pending','sent','cancelled')),
+  source TEXT,
+  created_at TEXT NOT NULL,
+  sent_at TEXT,
+  last_run_at TEXT
+);
+`;
+
 const INITIAL_SEED_KEY = "initial_seed_done";
 
 function nowIso(): string {
@@ -166,6 +211,7 @@ export function initDb(): Database.Database {
   db.exec(DAILY_LOG_SCHEMA);
   db.exec(GOALS_SCHEMA);
   db.exec(META_SCHEMA);
+  db.exec(REMINDERS_SCHEMA);
   migrate(db);
 
   seedOnFirstRun(db);
@@ -555,6 +601,104 @@ export function updateGoal(
 
 export function deleteGoal(id: number): boolean {
   const result = getDb().prepare("DELETE FROM goals WHERE id = ?").run(id);
+  return result.changes > 0;
+}
+
+// --- Reminders / scheduled Telegram notifications -------------------------
+
+export function addReminder(r: NewReminder): Reminder {
+  const ts = nowIso();
+  const result = getDb()
+    .prepare(
+      `INSERT INTO reminders
+        (message, due_at, cron, recurring, status, source, created_at, sent_at, last_run_at)
+       VALUES
+        (@message, @due_at, @cron, @recurring, 'pending', @source, @created_at, NULL, NULL)`
+    )
+    .run({
+      message: r.message,
+      due_at: r.due_at ?? null,
+      cron: r.cron ?? null,
+      recurring: r.recurring ? 1 : 0,
+      source: r.source ?? null,
+      created_at: ts,
+    });
+  return getReminder(Number(result.lastInsertRowid))!;
+}
+
+export function getReminder(id: number): Reminder | undefined {
+  return getDb()
+    .prepare("SELECT * FROM reminders WHERE id = ?")
+    .get(id) as Reminder | undefined;
+}
+
+/** All reminders, newest first. */
+export function getAllReminders(): Reminder[] {
+  return getDb()
+    .prepare("SELECT * FROM reminders ORDER BY id DESC")
+    .all() as Reminder[];
+}
+
+/** Pending reminders (one-off not yet sent + active recurring), soonest first. */
+export function getPendingReminders(): Reminder[] {
+  return getDb()
+    .prepare(
+      `SELECT * FROM reminders
+       WHERE status = 'pending'
+       ORDER BY (due_at IS NULL), due_at, id`
+    )
+    .all() as Reminder[];
+}
+
+/** One-off pending reminders whose due time has arrived (due_at <= nowIso). */
+export function getDueOneOffReminders(nowIso: string): Reminder[] {
+  return getDb()
+    .prepare(
+      `SELECT * FROM reminders
+       WHERE status = 'pending' AND recurring = 0
+         AND due_at IS NOT NULL AND due_at <= ?
+       ORDER BY due_at, id`
+    )
+    .all(nowIso) as Reminder[];
+}
+
+/** Active recurring reminders that need their cron task registered. */
+export function getActiveRecurringReminders(): Reminder[] {
+  return getDb()
+    .prepare(
+      `SELECT * FROM reminders
+       WHERE status = 'pending' AND recurring = 1 AND cron IS NOT NULL
+       ORDER BY id`
+    )
+    .all() as Reminder[];
+}
+
+/** Mark a one-off reminder delivered. */
+export function markReminderSent(id: number): boolean {
+  const ts = nowIso();
+  const result = getDb()
+    .prepare(
+      "UPDATE reminders SET status = 'sent', sent_at = ? WHERE id = ? AND status = 'pending'"
+    )
+    .run(ts, id);
+  return result.changes > 0;
+}
+
+/** Record that a recurring reminder just fired (it stays pending/active). */
+export function stampReminderRun(id: number): boolean {
+  const result = getDb()
+    .prepare("UPDATE reminders SET last_run_at = ? WHERE id = ?")
+    .run(nowIso(), id);
+  return result.changes > 0;
+}
+
+/** Cancel a pending reminder so it never fires again. */
+export function cancelReminder(id: number): boolean {
+  const result = getDb()
+    .prepare(
+      "UPDATE reminders SET status = 'cancelled' WHERE id = ? AND status = 'pending'"
+    )
+    .run(id);
   return result.changes > 0;
 }
 

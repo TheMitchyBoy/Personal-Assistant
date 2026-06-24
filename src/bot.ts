@@ -4,6 +4,7 @@ import type { Config } from "./config.js";
 import {
   addProject,
   addDailyLog,
+  getPendingReminders,
   getProject,
   setNextAction,
   setStatus,
@@ -11,6 +12,7 @@ import {
   type NewProject,
   type ProjectStatus,
   type ProjectType,
+  type Reminder,
   PROJECT_STATUSES,
 } from "./db.js";
 import {
@@ -69,6 +71,21 @@ export interface OperatorBot {
   sendDailyMessage: () => Promise<void>;
   /** Send the evening check-in prompt and arm the reply capture. */
   sendCheckinMessage: () => Promise<void>;
+  /** Deliver an arbitrary notification to the authorized chat. */
+  sendNotification: (message: string) => Promise<void>;
+}
+
+/** One line per pending reminder for the /reminders command. */
+function formatReminder(r: Reminder): string {
+  if (r.recurring && r.cron) {
+    return `\u23F0 #${r.id} (repeats: ${r.cron}) — ${r.message}`;
+  }
+  if (r.due_at) {
+    const when = new Date(r.due_at);
+    const pretty = Number.isNaN(when.getTime()) ? r.due_at : when.toLocaleString();
+    return `\u23F0 #${r.id} (${pretty}) — ${r.message}`;
+  }
+  return `\u23F0 #${r.id} — ${r.message}`;
 }
 
 export function createBot(config: Config): OperatorBot {
@@ -100,12 +117,28 @@ export function createBot(config: Config): OperatorBot {
         "/done {id} — mark next action done",
         "/progress {id} [note] — log progress (resets the stall clock)",
         "/status {id} {status} — update status",
+        "/reminders — list scheduled notifications",
       ].join("\n")
     )
   );
 
   bot.command("today", async (ctx) => {
     await ctx.reply(formatDailyMessage(config.stallDays));
+  });
+
+  bot.command("reminders", async (ctx) => {
+    const pending = getPendingReminders();
+    if (pending.length === 0) {
+      await ctx.reply(
+        "No scheduled notifications. Ask the assistant to schedule one."
+      );
+      return;
+    }
+    await ctx.reply(
+      ["\uD83D\uDCC5 Scheduled notifications:", ...pending.map(formatReminder)].join(
+        "\n"
+      )
+    );
   });
 
   bot.command("list", async (ctx) => {
@@ -283,7 +316,11 @@ export function createBot(config: Config): OperatorBot {
     );
   };
 
-  return { bot, sendDailyMessage, sendCheckinMessage };
+  const sendNotification = async (message: string): Promise<void> => {
+    await bot.telegram.sendMessage(authorizedChatId, message);
+  };
+
+  return { bot, sendDailyMessage, sendCheckinMessage, sendNotification };
 }
 
 async function handleAddStep(
