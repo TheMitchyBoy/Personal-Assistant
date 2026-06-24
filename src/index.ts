@@ -1,7 +1,7 @@
 import { loadConfig } from "./config.js";
 import { initDb } from "./db.js";
 import { createBot } from "./bot.js";
-import { startScheduler } from "./scheduler.js";
+import { startScheduler, startCheckinScheduler } from "./scheduler.js";
 
 async function main(): Promise<void> {
   const config = loadConfig();
@@ -9,9 +9,10 @@ async function main(): Promise<void> {
   initDb();
   console.log("[db] ready");
 
-  const { bot, sendDailyMessage } = createBot(config);
+  const { bot, sendDailyMessage, sendCheckinMessage } = createBot(config);
 
   startScheduler(config, sendDailyMessage);
+  startCheckinScheduler(config, sendCheckinMessage);
 
   // Launch the bot (long-running). launch() resolves only when the bot stops,
   // so we don't await it here; we only catch a failed startup (e.g. bad token).

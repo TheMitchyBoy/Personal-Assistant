@@ -85,6 +85,8 @@ Then edit `.env`:
 TELEGRAM_BOT_TOKEN=123456789:AAE...     # from @BotFather
 TELEGRAM_CHAT_ID=123456789              # your numeric chat id
 DAILY_TIME=07:30                        # 24h local time for the daily nudge
+CHECKIN_TIME=20:00                      # 24h local time for the evening check-in
+STALL_DAYS=4                            # no progress in this many days = "stalling"
 TZ=America/Chicago                      # for cron correctness
 ANTHROPIC_API_KEY=                      # Phase 2 only — leave blank
 DATABASE_PATH=                          # optional; leave blank locally (defaults to data/operator.db)
@@ -166,7 +168,9 @@ at it, or you'll lose your projects on each deploy.
    TELEGRAM_BOT_TOKEN=123456789:AAE...   # from @BotFather
    TELEGRAM_CHAT_ID=123456789            # your numeric chat id
    DAILY_TIME=07:30                      # local time of the daily nudge
-   TZ=America/Chicago                    # MUST match DAILY_TIME's locale
+   CHECKIN_TIME=20:00                    # local time of the evening check-in
+   STALL_DAYS=4                          # no progress in N days = "stalling"
+   TZ=America/Chicago                    # MUST match the times' locale
    DATABASE_PATH=/data/operator.db       # <-- points the DB at the volume
    # ANTHROPIC_API_KEY=                  # Phase 2 only, leave unset
    ```
@@ -209,9 +213,11 @@ ignored.
 | `/today` | Re-send today's allocation on demand |
 | `/list` | List active projects with id, name, type, score (compact) |
 | `/add` | Guided add, one question at a time (name → type → revenue 1-5 → confidence 1-5 → time_to_cash 1-5 → effort hrs → next action) |
-| `/next {id} {text}` | Set the `next_action` for a project |
-| `/done {id}` | Mark the current next action complete, then prompt for the new one |
+| `/next {id} {text}` | Set the `next_action` for a project (stamps progress) |
+| `/done {id}` | Mark the current next action complete (stamps progress), then prompt for the new one |
+| `/progress {id} [note]` | Log progress without changing the next action — resets the stall clock; an optional note is saved to `daily_log` |
 | `/status {id} {status}` | Update status (`idea`/`active`/`blocked`/`shipped`/`paid`/`archived`) |
+| `/skip` | Skip the evening check-in (reply to the check-in prompt) |
 | `/cancel` | Abort an in-progress `/add` or `/done` follow-up |
 
 ## Daily message format
@@ -231,7 +237,33 @@ Why: closest to getting paid (score 7.5).
 (only if you have time after the above)
 
 Reply /done {id} when you finish something.
+
+⚠️ Stalling:
+• Dental clinic booking tool (#2) — 6 days since progress
+• Niche affiliate blog (#3) — 9 days since progress
+Passive projects: quietly letting them rot is how they die.
 ```
+
+## Progress-based accountability
+
+Operator tracks momentum, not just priority — it works for any project type
+(client sites, sales, passive products), not just code.
+
+- **Progress stamping.** Every project has a `last_progress_at` timestamp. It's
+  set whenever you make progress: on `/done`, on `/next`, and via
+  `/progress {id} [note]` (which stamps without changing the next action and
+  optionally logs a note).
+- **Stall detection.** An `active` project is *stalling* if it has no recorded
+  progress, or its last progress is older than `STALL_DAYS` (default 4). A
+  `⚠️ Stalling` section is appended to the daily message listing each one as
+  `name — N days since progress`. If any stalled project is `passive`, a line
+  reminds you that quietly letting them rot is how they die.
+- **Evening check-in.** At `CHECKIN_TIME` (default 20:00, same timezone) the bot
+  asks *"What did you move forward today?"* Reply in plain text and it's saved
+  to the `daily_log` table; the bot confirms and lists anything still stalling so
+  you end the day knowing what's slipping. Send `/skip` to skip logging. (An
+  in-progress `/add` always takes priority, so the check-in can't collide with
+  it.)
 
 ## Project structure
 
@@ -241,10 +273,10 @@ operator/
     db.ts          # schema init, seed, typed query helpers
     scoring.ts     # score() + allocateDay()
     messages.ts    # daily message + list formatting (shared by bot & scheduler)
-    bot.ts         # telegraf commands
-    scheduler.ts   # node-cron -> allocateDay() -> send
+    bot.ts         # telegraf commands (incl. /progress, /skip, check-in reply)
+    scheduler.ts   # node-cron -> daily nudge + evening check-in
     config.ts      # load + validate env
-    index.ts       # boot: init db, start bot, start scheduler
+    index.ts       # boot: init db, start bot, start schedulers
     daily.ts       # one-shot allocation + send + exit (npm run daily)
   data/
     operator.db    # gitignored, auto-created
@@ -276,8 +308,18 @@ Table `projects`:
 | `next_action` | TEXT | the single concrete next step |
 | `deadline` | TEXT | ISO date, nullable |
 | `notes` | TEXT | nullable |
+| `last_progress_at` | TEXT | ISO datetime of most recent progress, nullable |
 | `created_at` | TEXT | ISO datetime |
 | `updated_at` | TEXT | ISO datetime |
+
+Table `daily_log` (evening check-ins + `/progress` notes):
+
+| column | type | notes |
+| --- | --- | --- |
+| `id` | INTEGER | PK autoincrement |
+| `date` | TEXT | ISO date (YYYY-MM-DD) |
+| `note` | TEXT | the free-text entry |
+| `created_at` | TEXT | ISO datetime |
 
 ## Roadmap (not built yet)
 

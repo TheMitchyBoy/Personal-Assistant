@@ -32,6 +32,13 @@ function scoreAndSort(projects: Project[]): ScoredProject[] {
     .sort((a, b) => b.score - a.score);
 }
 
+/** Number of whole days elapsed since the given ISO datetime (null if invalid). */
+function daysSince(isoDateTime: string): number | null {
+  const past = new Date(isoDateTime);
+  if (Number.isNaN(past.getTime())) return null;
+  return Math.floor((Date.now() - past.getTime()) / 86_400_000);
+}
+
 /** Number of whole days from today (UTC date) until the given ISO date. */
 function daysUntil(isoDate: string): number | null {
   const target = new Date(isoDate);
@@ -69,4 +76,4 @@ export function allocateDay(projects: Project[] = getActiveProjects()): DayAlloc
   };
 }
 
-export { daysUntil };
+export { daysUntil, daysSince };

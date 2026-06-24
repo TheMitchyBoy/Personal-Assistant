@@ -27,3 +27,30 @@ export function startScheduler(
 
   return task;
 }
+
+/**
+ * Schedule the evening check-in. Fires once a day at config.checkinTime in the
+ * configured timezone and calls `send` (which prompts + arms reply capture).
+ */
+export function startCheckinScheduler(
+  config: Config,
+  send: () => Promise<void>
+): ScheduledTask {
+  const expression = dailyTimeToCron(config.checkinTime);
+
+  const task = cron.schedule(
+    expression,
+    () => {
+      send().catch((err) => {
+        console.error("[scheduler] failed to send check-in:", err);
+      });
+    },
+    { timezone: config.tz }
+  );
+
+  console.log(
+    `[scheduler] evening check-in scheduled at ${config.checkinTime} (${config.tz}) [cron: "${expression}"]`
+  );
+
+  return task;
+}

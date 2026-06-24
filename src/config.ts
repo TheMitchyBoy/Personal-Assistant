@@ -22,6 +22,10 @@ export interface Config {
   telegramChatId: string;
   /** Daily nudge time in 24h "HH:MM" form. */
   dailyTime: string;
+  /** Evening check-in time in 24h "HH:MM" form. */
+  checkinTime: string;
+  /** An active project with no progress in this many days is "stalling". */
+  stallDays: number;
   /** IANA timezone string used for cron correctness. */
   tz: string;
   /** Phase 2 only — may be empty in Phase 1. */
@@ -62,6 +66,21 @@ export function loadConfig(): Config {
     );
   }
 
+  const checkinTime = (process.env.CHECKIN_TIME ?? "20:00").trim();
+  if (!DAILY_TIME_RE.test(checkinTime)) {
+    throw new Error(
+      `CHECKIN_TIME must be 24h "HH:MM" (got "${checkinTime}"), e.g. 20:00.`
+    );
+  }
+
+  const stallDaysRaw = (process.env.STALL_DAYS ?? "4").trim();
+  const stallDays = Number(stallDaysRaw);
+  if (!Number.isInteger(stallDays) || stallDays < 1) {
+    throw new Error(
+      `STALL_DAYS must be a positive whole number (got "${stallDaysRaw}"), e.g. 4.`
+    );
+  }
+
   const tz = (process.env.TZ ?? "America/Chicago").trim();
   const anthropicApiKey = (process.env.ANTHROPIC_API_KEY ?? "").trim();
 
@@ -69,6 +88,8 @@ export function loadConfig(): Config {
     telegramBotToken,
     telegramChatId,
     dailyTime,
+    checkinTime,
+    stallDays,
     tz,
     anthropicApiKey,
   };

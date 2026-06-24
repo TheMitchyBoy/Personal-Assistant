@@ -35,8 +35,17 @@ export interface Project {
   next_action: string | null;
   deadline: string | null; // ISO date
   notes: string | null;
+  last_progress_at: string | null; // ISO datetime of most recent progress
   created_at: string; // ISO datetime
   updated_at: string; // ISO datetime
+}
+
+/** A row in the daily_log table (evening check-ins + /progress notes). */
+export interface DailyLogEntry {
+  id: number;
+  date: string; // ISO date (YYYY-MM-DD)
+  note: string;
+  created_at: string; // ISO datetime
 }
 
 /** Fields a caller may provide when inserting a new project. */
@@ -76,6 +85,15 @@ CREATE TABLE IF NOT EXISTS projects (
 );
 `;
 
+const DAILY_LOG_SCHEMA = `
+CREATE TABLE IF NOT EXISTS daily_log (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  date TEXT NOT NULL,
+  note TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+`;
+
 function nowIso(): string {
   return new Date().toISOString();
 }
@@ -98,9 +116,41 @@ export function initDb(): Database.Database {
   db = new Database(DB_PATH);
   db.pragma("journal_mode = WAL");
   db.exec(SCHEMA);
+  db.exec(DAILY_LOG_SCHEMA);
+  migrate(db);
 
   seedIfEmpty(db);
+
+  // Ensure every project has a progress timestamp: backfill both pre-existing
+  // rows (migration) and freshly seeded rows to their created_at. Non-
+  // destructive — only touches rows that are still NULL.
+  db.exec(
+    "UPDATE projects SET last_progress_at = created_at WHERE last_progress_at IS NULL"
+  );
+
   return db;
+}
+
+/** True if `table` already has a column named `column`. */
+function hasColumn(
+  database: Database.Database,
+  table: string,
+  column: string
+): boolean {
+  const cols = database
+    .prepare(`PRAGMA table_info(${table})`)
+    .all() as { name: string }[];
+  return cols.some((c) => c.name === column);
+}
+
+/**
+ * Non-destructive schema migrations. Adds columns guarded by an existing-column
+ * check so re-running never errors and existing data is never dropped.
+ */
+function migrate(database: Database.Database): void {
+  if (!hasColumn(database, "projects", "last_progress_at")) {
+    database.exec("ALTER TABLE projects ADD COLUMN last_progress_at TEXT");
+  }
 }
 
 function getDb(): Database.Database {
@@ -226,10 +276,12 @@ export function addProject(p: NewProject): Project {
     .prepare(
       `INSERT INTO projects
         (name, type, client, revenue_potential, confidence, time_to_cash,
-         effort_remaining, status, next_action, deadline, notes, created_at, updated_at)
+         effort_remaining, status, next_action, deadline, notes,
+         last_progress_at, created_at, updated_at)
        VALUES
         (@name, @type, @client, @revenue_potential, @confidence, @time_to_cash,
-         @effort_remaining, @status, @next_action, @deadline, @notes, @created_at, @updated_at)`
+         @effort_remaining, @status, @next_action, @deadline, @notes,
+         @last_progress_at, @created_at, @updated_at)`
     )
     .run({
       name: p.name,
@@ -243,6 +295,7 @@ export function addProject(p: NewProject): Project {
       next_action: p.next_action ?? null,
       deadline: p.deadline ?? null,
       notes: p.notes ?? null,
+      last_progress_at: ts,
       created_at: ts,
       updated_at: ts,
     });
@@ -263,6 +316,53 @@ export function setStatus(id: number, status: ProjectStatus): boolean {
     .prepare("UPDATE projects SET status = ?, updated_at = ? WHERE id = ?")
     .run(status, nowIso(), id);
   return result.changes > 0;
+}
+
+/** Stamp a project as having made progress right now (resets its stall clock). */
+export function stampProgress(id: number): boolean {
+  const ts = nowIso();
+  const result = getDb()
+    .prepare(
+      "UPDATE projects SET last_progress_at = ?, updated_at = ? WHERE id = ?"
+    )
+    .run(ts, ts, id);
+  return result.changes > 0;
+}
+
+/** Append a free-text entry to the daily log (check-ins, /progress notes). */
+export function addDailyLog(note: string): DailyLogEntry {
+  const ts = nowIso();
+  const result = getDb()
+    .prepare(
+      "INSERT INTO daily_log (date, note, created_at) VALUES (?, ?, ?)"
+    )
+    .run(ts.slice(0, 10), note, ts);
+  return getDb()
+    .prepare("SELECT * FROM daily_log WHERE id = ?")
+    .get(Number(result.lastInsertRowid)) as DailyLogEntry;
+}
+
+/**
+ * Active projects that are stalling: no progress ever, or last progress older
+ * than `stallDays` days. Sorted most-stalled first (never-progressed first).
+ */
+export function getStalledProjects(stallDays: number): Project[] {
+  const cutoff = Date.now() - stallDays * 86_400_000;
+  return getActiveProjects()
+    .filter((p) => {
+      if (!p.last_progress_at) return true;
+      const t = new Date(p.last_progress_at).getTime();
+      return Number.isNaN(t) || t < cutoff;
+    })
+    .sort((a, b) => {
+      const ta = a.last_progress_at
+        ? new Date(a.last_progress_at).getTime()
+        : -Infinity;
+      const tb = b.last_progress_at
+        ? new Date(b.last_progress_at).getTime()
+        : -Infinity;
+      return ta - tb;
+    });
 }
 
 /** Clear the current next_action (e.g. when it has been completed). */

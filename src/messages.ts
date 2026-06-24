@@ -1,10 +1,15 @@
 import {
   allocateDay,
   daysUntil,
+  daysSince,
   score as scoreOf,
   type DayAllocation,
 } from "./scoring.js";
-import { getActiveProjects, type Project } from "./db.js";
+import {
+  getActiveProjects,
+  getStalledProjects,
+  type Project,
+} from "./db.js";
 
 function roundScore(n: number): string {
   return (Math.round(n * 10) / 10).toString();
@@ -21,11 +26,41 @@ function deadlineLine(p: Project): string {
   return `• ${p.name} (#${p.id}) — due ${when}`;
 }
 
+function stallLine(p: Project): string {
+  if (!p.last_progress_at) {
+    return `\u2022 ${p.name} (#${p.id}) — no recorded progress yet`;
+  }
+  const d = daysSince(p.last_progress_at) ?? 0;
+  return `\u2022 ${p.name} (#${p.id}) — ${d} ${d === 1 ? "day" : "days"} since progress`;
+}
+
+/**
+ * Build the "⚠️ Stalling" block for active projects past `stallDays`, or null
+ * if nothing is stalling. Reused by the daily message and the evening check-in.
+ */
+export function buildStallSection(stallDays: number): string | null {
+  const stalled = getStalledProjects(stallDays);
+  if (stalled.length === 0) return null;
+
+  const lines = ["\u26A0\uFE0F Stalling:"];
+  for (const p of stalled) {
+    lines.push(stallLine(p));
+  }
+  if (stalled.some((p) => p.type === "passive")) {
+    lines.push("Passive projects: quietly letting them rot is how they die.");
+  }
+  return lines.join("\n");
+}
+
 /**
  * Build the single daily focus message. Returns plain text (no markdown
  * parse_mode needed) so project names with special chars are safe.
+ *
+ * When `stallDays` is provided, a "⚠️ Stalling" section is appended; the
+ * primary/secondary/deadline sections are untouched.
  */
 export function formatDailyMessage(
+  stallDays: number | null = null,
   allocation: DayAllocation = allocateDay()
 ): string {
   const lines: string[] = ["\u2600\uFE0F Today's focus", ""];
@@ -62,6 +97,14 @@ export function formatDailyMessage(
 
   lines.push("");
   lines.push("Reply /done {id} when you finish something.");
+
+  if (stallDays !== null) {
+    const stallSection = buildStallSection(stallDays);
+    if (stallSection) {
+      lines.push("");
+      lines.push(stallSection);
+    }
+  }
 
   return lines.join("\n");
 }

@@ -3,15 +3,21 @@ import { message } from "telegraf/filters";
 import type { Config } from "./config.js";
 import {
   addProject,
+  addDailyLog,
   getProject,
   setNextAction,
   setStatus,
+  stampProgress,
   type NewProject,
   type ProjectStatus,
   type ProjectType,
   PROJECT_STATUSES,
 } from "./db.js";
-import { formatDailyMessage, formatProjectList } from "./messages.js";
+import {
+  buildStallSection,
+  formatDailyMessage,
+  formatProjectList,
+} from "./messages.js";
 
 /** Statuses the user may set via /done or /status. */
 const SETTABLE_STATUSES: ProjectStatus[] = [
@@ -38,7 +44,12 @@ interface DoneFollowUp {
   projectId: number;
 }
 
-type Session = AddDraft | DoneFollowUp;
+/** Awaiting the user's free-text reply to the evening check-in. */
+interface CheckinSession {
+  kind: "checkin";
+}
+
+type Session = AddDraft | DoneFollowUp | CheckinSession;
 
 function parse1to5(text: string): number | null {
   const n = Number(text.trim());
@@ -56,6 +67,8 @@ export interface OperatorBot {
   bot: Telegraf;
   /** Send today's allocation to the authorized chat. */
   sendDailyMessage: () => Promise<void>;
+  /** Send the evening check-in prompt and arm the reply capture. */
+  sendCheckinMessage: () => Promise<void>;
 }
 
 export function createBot(config: Config): OperatorBot {
@@ -85,13 +98,14 @@ export function createBot(config: Config): OperatorBot {
         "/add — add a project (guided)",
         "/next {id} {text} — set next action",
         "/done {id} — mark next action done",
+        "/progress {id} [note] — log progress (resets the stall clock)",
         "/status {id} {status} — update status",
       ].join("\n")
     )
   );
 
   bot.command("today", async (ctx) => {
-    await ctx.reply(formatDailyMessage());
+    await ctx.reply(formatDailyMessage(config.stallDays));
   });
 
   bot.command("list", async (ctx) => {
@@ -111,6 +125,7 @@ export function createBot(config: Config): OperatorBot {
       return;
     }
     setNextAction(id, remainder.trim());
+    stampProgress(id);
     await ctx.reply(`\u2705 Next action for #${id} updated.`);
   });
 
@@ -146,6 +161,7 @@ export function createBot(config: Config): OperatorBot {
       await ctx.reply(`No project with id ${id}.`);
       return;
     }
+    stampProgress(id);
     sessions.set(authorizedChatId, { kind: "done_next_action", projectId: id });
     await ctx.reply(
       [
@@ -155,6 +171,45 @@ export function createBot(config: Config): OperatorBot {
         `or send /status ${id} shipped | paid | blocked if it's finished/stuck.`,
       ].join("\n")
     );
+  });
+
+  // /progress {id} [note] — stamp progress without changing the next action.
+  bot.command("progress", async (ctx) => {
+    const rest = stripCommand(ctx.message.text);
+    const { id, remainder } = splitIdAndRest(rest);
+    if (id === null) {
+      await ctx.reply("Usage: /progress {id} [optional note]");
+      return;
+    }
+    const project = getProject(id);
+    if (!project) {
+      await ctx.reply(`No project with id ${id}.`);
+      return;
+    }
+    stampProgress(id);
+    const note = remainder.trim();
+    if (note) {
+      addDailyLog(`#${id} ${project.name}: ${note}`);
+    }
+    await ctx.reply(
+      `\u2705 Logged progress on #${id} (${project.name}).${note ? " Note saved." : ""}`
+    );
+  });
+
+  // /skip — only meaningful as a reply to the evening check-in.
+  bot.command("skip", async (ctx) => {
+    const session = sessions.get(authorizedChatId);
+    if (session?.kind === "checkin") {
+      sessions.delete(authorizedChatId);
+      const stalls = buildStallSection(config.stallDays);
+      await ctx.reply(
+        stalls
+          ? `No check-in logged tonight.\n\n${stalls}`
+          : "No check-in logged tonight. Nothing stalling — nice."
+      );
+    } else {
+      await ctx.reply("Nothing to skip.");
+    }
   });
 
   // /add — guided, one question at a time.
@@ -175,7 +230,7 @@ export function createBot(config: Config): OperatorBot {
     }
   });
 
-  // Free-text handler drives /add and the /done follow-up.
+  // Free-text handler drives /add, the /done follow-up, and the check-in reply.
   bot.on(message("text"), async (ctx) => {
     const text = ctx.message.text;
     if (text.startsWith("/")) return; // commands handled above
@@ -183,21 +238,52 @@ export function createBot(config: Config): OperatorBot {
     const session = sessions.get(authorizedChatId);
     if (!session) return; // nothing in progress; ignore stray text
 
+    // /add takes priority so a check-in firing mid-add can't collide with it.
+    if (session.kind === "add") {
+      await handleAddStep(ctx, session, sessions, authorizedChatId, text);
+      return;
+    }
+
     if (session.kind === "done_next_action") {
       setNextAction(session.projectId, text.trim());
+      stampProgress(session.projectId);
       sessions.delete(authorizedChatId);
       await ctx.reply(`\u2705 New next action set for #${session.projectId}.`);
       return;
     }
 
-    await handleAddStep(ctx, session, sessions, authorizedChatId, text);
+    if (session.kind === "checkin") {
+      addDailyLog(text.trim());
+      sessions.delete(authorizedChatId);
+      const stalls = buildStallSection(config.stallDays);
+      await ctx.reply(
+        stalls
+          ? `\u2705 Logged. Thanks.\n\n${stalls}`
+          : "\u2705 Logged. Thanks. Nothing stalling right now — nice."
+      );
+      return;
+    }
   });
 
   const sendDailyMessage = async (): Promise<void> => {
-    await bot.telegram.sendMessage(authorizedChatId, formatDailyMessage());
+    await bot.telegram.sendMessage(
+      authorizedChatId,
+      formatDailyMessage(config.stallDays)
+    );
   };
 
-  return { bot, sendDailyMessage };
+  const sendCheckinMessage = async (): Promise<void> => {
+    // Don't clobber an in-progress flow (e.g. /add); it keeps priority.
+    if (!sessions.has(authorizedChatId)) {
+      sessions.set(authorizedChatId, { kind: "checkin" });
+    }
+    await bot.telegram.sendMessage(
+      authorizedChatId,
+      "\uD83C\uDF19 What did you move forward today? Reply with what you got done, or /skip."
+    );
+  };
+
+  return { bot, sendDailyMessage, sendCheckinMessage };
 }
 
 async function handleAddStep(
