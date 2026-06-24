@@ -1,7 +1,7 @@
 import Database from "better-sqlite3";
 import fs from "node:fs";
 import path from "node:path";
-import { DB_PATH } from "./config.js";
+import { DB_PATH, DB_USES_RAILWAY_DEFAULT } from "./config.js";
 
 export type ProjectType = "fast" | "passive";
 export type ProjectStatus =
@@ -131,6 +131,15 @@ CREATE TABLE IF NOT EXISTS goals (
 );
 `;
 
+const META_SCHEMA = `
+CREATE TABLE IF NOT EXISTS app_meta (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+`;
+
+const INITIAL_SEED_KEY = "initial_seed_done";
+
 function nowIso(): string {
   return new Date().toISOString();
 }
@@ -143,24 +152,34 @@ function isoDateInDays(days: number): string {
 }
 
 /**
- * Open (and lazily create) the database, ensure schema exists, and seed
- * example rows on first run. Safe to call multiple times.
+ * Open (and lazily create) the database, ensure schema exists, and seed demo
+ * rows exactly once on a brand-new database. Safe to call multiple times.
  */
 export function initDb(): Database.Database {
   if (db) return db;
 
   fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
+  const dbExisted = fs.existsSync(DB_PATH) && fs.statSync(DB_PATH).size > 0;
   db = new Database(DB_PATH);
   db.pragma("journal_mode = WAL");
   db.exec(SCHEMA);
   db.exec(DAILY_LOG_SCHEMA);
   db.exec(GOALS_SCHEMA);
+  db.exec(META_SCHEMA);
   migrate(db);
 
-  seedIfEmpty(db);
-  seedGoalIfEmpty(db);
+  seedOnFirstRun(db);
 
-  // Ensure every project has a progress timestamp: backfill both pre-existing
+  console.log(`[db] using ${DB_PATH}${dbExisted ? "" : " (new file)"}`);
+  if (DB_USES_RAILWAY_DEFAULT) {
+    console.log(
+      "[db] Railway detected — database defaults to /data/operator.db. " +
+        "Attach a persistent volume mounted at /data or set DATABASE_PATH, " +
+        "otherwise all data is wiped on every deploy."
+    );
+  }
+
+  // Ensure every project has a progress timestamp:
   // rows (migration) and freshly seeded rows to their created_at. Non-
   // destructive — only touches rows that are still NULL.
   db.exec(
@@ -197,12 +216,45 @@ function getDb(): Database.Database {
   return db;
 }
 
-function seedIfEmpty(database: Database.Database): void {
-  const { count } = database
-    .prepare("SELECT COUNT(*) AS count FROM projects")
-    .get() as { count: number };
-  if (count > 0) return;
+function hasMeta(database: Database.Database, key: string): boolean {
+  const row = database
+    .prepare("SELECT 1 FROM app_meta WHERE key = ?")
+    .get(key);
+  return row !== undefined;
+}
 
+function setMeta(database: Database.Database, key: string, value: string): void {
+  database
+    .prepare("INSERT OR REPLACE INTO app_meta (key, value) VALUES (?, ?)")
+    .run(key, value);
+}
+
+/**
+ * Insert demo rows exactly once on a brand-new database. Never re-runs when
+ * tables are later emptied — deleting all goals must not resurrect the seed.
+ */
+function seedOnFirstRun(database: Database.Database): void {
+  if (hasMeta(database, INITIAL_SEED_KEY)) return;
+
+  const { projectCount, goalCount } = database
+    .prepare(
+      `SELECT
+        (SELECT COUNT(*) FROM projects) AS projectCount,
+        (SELECT COUNT(*) FROM goals) AS goalCount`
+    )
+    .get() as { projectCount: number; goalCount: number };
+
+  // Fresh install only — never re-seed because a table was later emptied.
+  if (projectCount === 0 && goalCount === 0) {
+    seedProjects(database);
+    seedGoals(database);
+  }
+
+  // Mark seeded for existing databases too so upgrades don't insert demo rows.
+  setMeta(database, INITIAL_SEED_KEY, nowIso());
+}
+
+function seedProjects(database: Database.Database): void {
   const seeds: NewProject[] = [
     {
       name: "Joe's Pizza website",
@@ -291,12 +343,7 @@ function seedIfEmpty(database: Database.Database): void {
   insertMany(seeds);
 }
 
-function seedGoalIfEmpty(database: Database.Database): void {
-  const { count } = database
-    .prepare("SELECT COUNT(*) AS count FROM goals")
-    .get() as { count: number };
-  if (count > 0) return;
-
+function seedGoals(database: Database.Database): void {
   const ts = nowIso();
   database
     .prepare(

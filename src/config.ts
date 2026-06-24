@@ -9,13 +9,38 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 /**
  * Absolute path to the SQLite database file.
  *
- * Defaults to `<project>/data/operator.db`. On hosts with an ephemeral
- * filesystem (e.g. Railway), set `DATABASE_PATH` to a path on a mounted
- * persistent volume, e.g. `/data/operator.db`, so the DB survives redeploys.
+ * Resolution order:
+ * 1. `DATABASE_PATH` env var when set
+ * 2. `/data/operator.db` on Railway (expects a persistent volume at `/data`)
+ * 3. `<project>/data/operator.db` for local development
+ *
+ * On hosts with an ephemeral filesystem, set `DATABASE_PATH` to a path on a
+ * mounted persistent volume so goals, projects, and logs survive restarts.
  */
-export const DB_PATH = process.env.DATABASE_PATH
-  ? path.resolve(process.env.DATABASE_PATH)
-  : path.resolve(__dirname, "..", "data", "operator.db");
+function resolveDbPath(): string {
+  const explicit = process.env.DATABASE_PATH?.trim();
+  if (explicit) return path.resolve(explicit);
+
+  const onRailway = Boolean(
+    process.env.RAILWAY_ENVIRONMENT ||
+      process.env.RAILWAY_PROJECT_ID ||
+      process.env.RAILWAY_SERVICE_ID
+  );
+  if (onRailway) return path.resolve("/data/operator.db");
+
+  return path.resolve(__dirname, "..", "data", "operator.db");
+}
+
+export const DB_PATH = resolveDbPath();
+
+/** True when running on Railway without an explicit DATABASE_PATH override. */
+export const DB_USES_RAILWAY_DEFAULT =
+  !process.env.DATABASE_PATH?.trim() &&
+  Boolean(
+    process.env.RAILWAY_ENVIRONMENT ||
+      process.env.RAILWAY_PROJECT_ID ||
+      process.env.RAILWAY_SERVICE_ID
+  );
 
 export interface Config {
   telegramBotToken: string;

@@ -1,5 +1,5 @@
 import { loadConfig } from "./config.js";
-import { initDb } from "./db.js";
+import { initDb, closeDb } from "./db.js";
 import { createBot } from "./bot.js";
 import { startScheduler, startCheckinScheduler } from "./scheduler.js";
 import { startServer } from "./server.js";
@@ -93,6 +93,7 @@ async function main(): Promise<void> {
     } catch {
       // Bot may not be running (launch failed/gave up) — fine.
     }
+    closeDb();
     process.exit(0);
   };
   process.once("SIGINT", () => shutdown("SIGINT"));
