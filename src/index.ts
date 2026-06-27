@@ -1,3 +1,15 @@
+/**
+ * Application entry point.
+ *
+ * Boots four long-lived subsystems in one process:
+ *   1. PostgreSQL (schema + connection pool)
+ *   2. Telegram bot (Telegraf long-polling)
+ *   3. Per-user scheduler (timezone-aware daily nudge + evening check-in)
+ *   4. Web dashboard (Express API + static HTML)
+ *
+ * The bot launch is retried on transient failures (e.g. Telegram 409 during deploy
+ * overlap) but gives up on bad tokens so the dashboard keeps serving.
+ */
 import { loadConfig } from "./config.js";
 import { initDb, closeDb, deleteExpiredSessions } from "./db.js";
 import { createBot } from "./bot.js";

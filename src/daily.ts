@@ -1,3 +1,9 @@
+/**
+ * One-shot CLI entry — send today's allocation to a single user and exit.
+ *
+ * Usage: npm run daily -- user@example.com
+ * Useful for external cron (GitHub Actions) when not running the long-lived process.
+ */
 import { loadConfig } from "./config.js";
 import { initDb, getUserByEmail } from "./db.js";
 import { createBot } from "./bot.js";

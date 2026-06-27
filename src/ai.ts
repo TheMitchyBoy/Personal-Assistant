@@ -1,3 +1,10 @@
+/**
+ * Optional AI assistant — Anthropic chat with live database context.
+ *
+ * buildSystemPrompt() injects goals, projects, allocation, and stalls on every
+ * turn. Tool calls (create_project, update_project, create_goal) write directly
+ * to Postgres so the assistant can act, not just advise.
+ */
 import Anthropic from "@anthropic-ai/sdk";
 import type { Config } from "./config.js";
 import {

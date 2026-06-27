@@ -1,3 +1,10 @@
+/**
+ * Per-user timezone scheduler.
+ *
+ * Fires every minute, compares each linked user's local time (IANA timezone)
+ * against their daily_time / checkin_time, and sends nudges once per calendar
+ * day (tracked via last_*_nudge_date on the user row).
+ */
 import cron, { type ScheduledTask } from "node-cron";
 import {
   getUsersWithTelegram,

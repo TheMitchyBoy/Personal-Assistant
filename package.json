@@ -1,9 +1,21 @@
 {
   "name": "manoverboard",
   "version": "0.2.0",
-  "private": true,
   "description": "manoverboard.ai — one clear priority for your side hustle. Cron job + Postgres + Telegram bot + dashboard.",
   "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/TheMitchyBoy/Personal-Assistant.git"
+  },
+  "keywords": [
+    "side-hustle",
+    "telegram-bot",
+    "productivity",
+    "postgresql",
+    "typescript",
+    "prioritization"
+  ],
   "engines": {
     "node": "20.x"
   },

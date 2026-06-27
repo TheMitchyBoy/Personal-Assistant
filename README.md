@@ -1,5 +1,11 @@
 # manoverboard.ai
 
+[![Node 20](https://img.shields.io/badge/node-20.x-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.7-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
+[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-4169E1?logo=postgresql&logoColor=white)](https://www.postgresql.org/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![CI](https://github.com/TheMitchyBoy/Personal-Assistant/actions/workflows/ci.yml/badge.svg)](https://github.com/TheMitchyBoy/Personal-Assistant/actions/workflows/ci.yml)
+
 Your side-hustle focus assistant.
 A lightweight personal assistant + business analyst for a dev side-hustle —
 It is **not** a chat app, Kanban board, or generic SaaS — it's a **cron job + a
@@ -7,6 +13,22 @@ PostgreSQL database + a Telegram bot + a web dashboard**. It runs on a schedule,
 looks at your projects, and pushes you **one clear thing to do each day** so you
 make money without burning out. Multiple users can sign up; each account's data
 is isolated by `user_id`.
+
+## Table of contents
+
+- [Core idea — dual-track prioritization](#core-idea--dual-track-prioritization)
+- [Stack](#stack)
+- [Setup](#setup)
+- [Run](#run)
+- [Deploy to Railway](#deploy-to-railway-recommended-host)
+- [Telegram commands](#telegram-commands)
+- [Web dashboard](#web-dashboard)
+- [Daily message format](#daily-message-format)
+- [Progress-based accountability](#progress-based-accountability)
+- [Project structure](#project-structure)
+- [Data model](#data-model)
+- [Roadmap](#roadmap-not-built-yet)
+- [Contributing](#contributing)
 
 ## Core idea — dual-track prioritization
 
@@ -309,27 +331,34 @@ manoverboard.ai tracks momentum, not just priority — it works for any project 
 ## Project structure
 
 ```
-operator/
+manoverboard/
   src/
-    db.ts          # schema init, seed, typed query helpers
-    scoring.ts     # score() + allocateDay()
-    messages.ts    # daily message + list formatting (shared by bot & scheduler)
-    bot.ts         # telegraf commands (incl. /progress, /skip, check-in reply)
-    scheduler.ts   # node-cron -> daily nudge + evening check-in
-    server.ts      # express API for the web dashboard (auth + projects/goals CRUD + chat)
-    ai.ts          # AI chat agent: live-context system prompt + Anthropic call
+    index.ts       # entry: boot DB, bot, scheduler, web server
     config.ts      # load + validate env
-    index.ts       # boot: init db, start bot, schedulers, web server
-    daily.ts       # one-shot allocation + send + exit (npm run daily)
+    db.ts          # PostgreSQL schema, pool, typed query helpers
+    auth.ts        # signup/login, sessions, password hashing
+    scoring.ts     # score() + allocateDay() — core prioritization logic
+    messages.ts    # daily message + list formatting (shared by bot & scheduler)
+    bot.ts         # Telegraf commands (/add wizard, check-in, /progress)
+    scheduler.ts   # per-user timezone cron → daily nudge + evening check-in
+    server.ts      # Express API + static dashboard
+    ai.ts          # Anthropic assistant with live context + tools
+    daily.ts       # one-shot: send allocation to one user and exit
   public/
     index.html     # web dashboard (vanilla HTML/CSS/JS, no build step)
-  data/
-    operator.db    # gitignored, auto-created
+  docs/
+    ARCHITECTURE.md  # how modules connect at runtime
+    DATABASE.md      # schema and storage notes
+  .github/workflows/
+    ci.yml           # typecheck on push/PR
   .env.example
-  .gitignore
+  LICENSE
+  CONTRIBUTING.md
   package.json
   README.md
 ```
+
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for a runtime diagram and data-flow notes.
 
 ## Data model
 
@@ -388,3 +417,7 @@ Table `goals` (edited from the web dashboard):
   [Web dashboard](#web-dashboard).)
 
 The Phase 2/3 items above are intentionally **not** implemented yet.
+
+## Contributing
+
+Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, style, and PR expectations.

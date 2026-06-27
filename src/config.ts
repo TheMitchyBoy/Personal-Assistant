@@ -2,6 +2,10 @@ import { config as loadDotenv } from "dotenv";
 
 loadDotenv();
 
+// ---------------------------------------------------------------------------
+// Environment helpers — used by db.ts and signup defaults
+// ---------------------------------------------------------------------------
+
 /** True when running on Railway (or a Railway-compatible host). */
 export function isRailway(): boolean {
   return Boolean(

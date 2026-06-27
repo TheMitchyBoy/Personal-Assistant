@@ -1,3 +1,10 @@
+/**
+ * Web dashboard API — Express REST routes + static frontend.
+ *
+ * Public: signup, login, health check.
+ * Protected (/api/*): projects, goals, settings, AI chat — all require
+ * Authorization: Bearer <session token> from auth.ts.
+ */
 import express, { type Request, type Response, type NextFunction } from "express";
 import path from "node:path";
 import { fileURLToPath } from "node:url";

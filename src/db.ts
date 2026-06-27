@@ -1,3 +1,13 @@
+/**
+ * PostgreSQL data layer.
+ *
+ * Owns the connection pool, schema bootstrap (`CREATE TABLE IF NOT EXISTS`),
+ * and all typed CRUD for users, sessions, projects, goals, and daily_log.
+ *
+ * Every query is scoped by `user_id` so multiple accounts share one database
+ * safely. Demo projects are seeded only for new signups when SEED_DEMO_DATA
+ * allows it (local by default, off on Railway).
+ */
 import pg from "pg";
 import crypto from "node:crypto";
 import { getDatabaseUrl, shouldSeedDemoData } from "./config.js";
@@ -123,6 +133,10 @@ export interface UserSettingsPatch {
 }
 
 let pool: pg.Pool | null = null;
+
+// ---------------------------------------------------------------------------
+// Schema — applied once at boot via initDb()
+// ---------------------------------------------------------------------------
 
 function nowIso(): string {
   return new Date().toISOString();

@@ -1,3 +1,10 @@
+/**
+ * Dashboard authentication — signup, login, bearer sessions.
+ *
+ * Passwords are bcrypt-hashed; sessions are opaque tokens stored in Postgres
+ * with a 30-day expiry. resolveUserFromToken() backs the requireAuth middleware
+ * in server.ts.
+ */
 import crypto from "node:crypto";
 import bcrypt from "bcryptjs";
 import type { Config } from "./config.js";

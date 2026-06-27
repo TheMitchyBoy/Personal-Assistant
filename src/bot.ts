@@ -1,3 +1,10 @@
+/**
+ * Telegram bot — Telegraf command handlers and conversational flows.
+ *
+ * Commands mutate Postgres via db.ts; read paths use messages.ts for formatting.
+ * In-memory `sessions` track multi-step flows (/add wizard, /done follow-up,
+ * evening check-in) keyed by Telegram chat id.
+ */
 import { Telegraf } from "telegraf";
 import { message } from "telegraf/filters";
 import type { Config } from "./config.js";
@@ -44,6 +51,10 @@ interface CheckinSession {
 }
 
 type Session = AddDraft | DoneFollowUp | CheckinSession;
+
+// ---------------------------------------------------------------------------
+// Input parsers for the guided /add flow
+// ---------------------------------------------------------------------------
 
 function parse1to5(text: string): number | null {
   const n = Number(text.trim());
@@ -278,6 +289,7 @@ export function createBot(config: Config): OperatorBot {
     }
   });
 
+  // Free-text handler: only runs when a session is active (not for commands).
   bot.on(message("text"), async (ctx) => {
     const text = ctx.message.text;
     if (text.startsWith("/")) return;

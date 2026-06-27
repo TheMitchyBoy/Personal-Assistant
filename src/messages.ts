@@ -1,3 +1,10 @@
+/**
+ * Telegram message formatting.
+ *
+ * Turns scored projects into human-readable strings for `/today`, scheduled
+ * nudges, and stall warnings. All paths call scoring.ts so bot and scheduler
+ * stay in sync with the same allocation logic.
+ */
 import { allocateDay, daysUntil, daysSince, score as scoreOf, type DayAllocation } from "./scoring.js";
 import { getActiveProjects, getStalledProjects, type Project } from "./db.js";
 
