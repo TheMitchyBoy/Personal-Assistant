@@ -1,30 +1,23 @@
 /**
- * Optional AI assistant — Anthropic chat with live database context.
- *
- * buildSystemPrompt() injects goals, projects, allocation, and stalls on every
- * turn. Tool calls (create_project, update_project, create_goal) write directly
- * to Postgres so the assistant can act, not just advise.
+ * Optional AI assistant — suggests and manages ideas and their tasks.
  */
 import Anthropic from "@anthropic-ai/sdk";
 import type { Config } from "./config.js";
 import {
   addGoal,
   addProject,
-  getActiveProjects,
-  getAllProjects,
+  addProjectTask,
+  getAllProjectsWithTasks,
   getGoals,
-  getProject,
+  getProjectWithTasks,
   getStalledProjects,
   getUserById,
-  PROJECT_STATUSES,
-  PROJECT_TYPES,
   updateProject,
   type NewProject,
   type ProjectPatch,
   type ProjectStatus,
-  type ProjectType,
 } from "./db.js";
-import { allocateDay, score, daysSince } from "./scoring.js";
+import { allocateDay } from "./scoring.js";
 
 export interface ChatMessage {
   role: "user" | "assistant";
@@ -32,10 +25,11 @@ export interface ChatMessage {
 }
 
 export interface ChatAction {
-  type: "created_project" | "updated_project" | "created_goal";
+  type: "created_project" | "updated_project" | "created_goal" | "added_tasks";
   id: number;
   name?: string;
   title?: string;
+  taskCount?: number;
 }
 
 export interface ChatResult {
@@ -46,78 +40,62 @@ export interface ChatResult {
 const MAX_HISTORY = 20;
 const MAX_OUTPUT_TOKENS = 2048;
 const MAX_TOOL_ROUNDS = 6;
-const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+const UI_STATUSES: ProjectStatus[] = ["idea", "active", "blocked", "shipped", "archived"];
 
 const TOOLS: Anthropic.Tool[] = [
   {
-    name: "create_project",
+    name: "create_idea",
     description:
-      "Add a new project to the user's portfolio. Use when they want to track a new client gig, product, or income stream, or when they agree to a project you recommend. Always include a concrete next_action.",
+      "Add a new idea the user wants to explore. Include a short description and 2-5 concrete starter tasks when possible.",
     input_schema: {
       type: "object",
       properties: {
-        name: { type: "string", description: "Short project name" },
-        type: {
-          type: "string",
-          enum: ["fast", "passive"],
-          description: "fast = paid client/services work; passive = long-game products/ads",
+        name: { type: "string", description: "Short idea title" },
+        description: { type: "string", description: "What the idea is about and why it matters" },
+        status: { type: "string", enum: ["idea", "active", "blocked", "shipped", "archived"] },
+        tasks: {
+          type: "array",
+          items: { type: "string" },
+          description: "Concrete tasks that move this idea forward",
         },
-        client: { type: "string", description: "Client or customer name, if any" },
-        revenue_potential: { type: "integer", description: "1-5, 5 = big money" },
-        confidence: { type: "integer", description: "1-5, likelihood someone pays" },
-        time_to_cash: {
-          type: "integer",
-          description: "1-5, 1 = paid within days, 5 = months/never",
-        },
-        effort_remaining: { type: "integer", description: "Estimated hours left, >= 0" },
-        status: {
-          type: "string",
-          enum: ["idea", "active", "blocked", "shipped", "paid", "archived"],
-        },
-        next_action: { type: "string", description: "Single concrete next step" },
-        deadline: { type: "string", description: "YYYY-MM-DD, optional" },
-        notes: { type: "string" },
       },
-      required: [
-        "name",
-        "type",
-        "revenue_potential",
-        "confidence",
-        "time_to_cash",
-        "effort_remaining",
-        "next_action",
-      ],
+      required: ["name"],
     },
   },
   {
-    name: "update_project",
-    description:
-      "Update an existing project by id — sharpen next_action, change status, adjust scores, etc.",
+    name: "update_idea",
+    description: "Update an existing idea's title, description, or status.",
     input_schema: {
       type: "object",
       properties: {
-        id: { type: "integer", description: "Project id, e.g. from the live context" },
+        id: { type: "integer" },
         name: { type: "string" },
-        type: { type: "string", enum: ["fast", "passive"] },
-        client: { type: "string" },
-        revenue_potential: { type: "integer" },
-        confidence: { type: "integer" },
-        time_to_cash: { type: "integer" },
-        effort_remaining: { type: "integer" },
-        status: {
-          type: "string",
-          enum: ["idea", "active", "blocked", "shipped", "paid", "archived"],
-        },
-        next_action: { type: "string" },
-        deadline: { type: "string", description: "YYYY-MM-DD or empty to clear" },
-        notes: { type: "string" },
+        description: { type: "string" },
+        status: { type: "string", enum: ["idea", "active", "blocked", "shipped", "archived"] },
       },
       required: ["id"],
     },
   },
   {
+    name: "add_tasks",
+    description:
+      "Add one or more tasks to an existing idea. Use when suggesting next steps or when the user agrees to your task list.",
+    input_schema: {
+      type: "object",
+      properties: {
+        project_id: { type: "integer", description: "Idea id" },
+        tasks: {
+          type: "array",
+          items: { type: "string" },
+          description: "Task titles — specific and actionable",
+        },
+      },
+      required: ["project_id", "tasks"],
+    },
+  },
+  {
     name: "create_goal",
-    description: "Add a high-level goal that frames what the user's projects are working toward.",
+    description: "Add a high-level goal that frames what the user's ideas are working toward.",
     input_schema: {
       type: "object",
       properties: {
@@ -133,10 +111,6 @@ export function isAiConfigured(config: Config): boolean {
   return config.anthropicApiKey.length > 0;
 }
 
-function round1(n: number): string {
-  return (Math.round(n * 10) / 10).toString();
-}
-
 function toNullableString(v: unknown): string | null {
   if (v === null || v === undefined) return null;
   const s = String(v).trim();
@@ -148,109 +122,46 @@ function toInt(v: unknown): number | null {
   return Number.isInteger(n) ? n : null;
 }
 
-function validate1to5(v: unknown, field: string): { value: number } | { error: string } {
-  const n = toInt(v);
-  if (n === null || n < 1 || n > 5) return { error: `${field} must be an integer 1-5` };
-  return { value: n };
+function parseTasks(v: unknown): string[] {
+  if (!Array.isArray(v)) return [];
+  return v.map((t) => (typeof t === "string" ? t.trim() : "")).filter(Boolean);
 }
 
-function validateDeadline(v: unknown): { value: string | null } | { error: string } {
-  const s = toNullableString(v);
-  if (s === null) return { value: null };
-  if (!DATE_RE.test(s)) return { error: "deadline must be YYYY-MM-DD or empty" };
-  return { value: s };
-}
-
-function validateNewProjectInput(
-  body: Record<string, unknown>
-): { value: NewProject } | { error: string } {
+function validateNewIdea(body: Record<string, unknown>): { value: NewProject } | { error: string } {
   const name = toNullableString(body.name);
   if (!name) return { error: "name is required" };
-
-  const type = String(body.type ?? "").trim() as ProjectType;
-  if (!PROJECT_TYPES.includes(type)) return { error: "type must be 'fast' or 'passive'" };
-
-  const rev = validate1to5(body.revenue_potential, "revenue_potential");
-  if ("error" in rev) return rev;
-  const conf = validate1to5(body.confidence, "confidence");
-  if ("error" in conf) return conf;
-  const ttc = validate1to5(body.time_to_cash, "time_to_cash");
-  if ("error" in ttc) return ttc;
-
-  const effort = toInt(body.effort_remaining);
-  if (effort === null || effort < 0) return { error: "effort_remaining must be a whole number >= 0" };
-
-  const status = String(body.status ?? "active").trim() as ProjectStatus;
-  if (!PROJECT_STATUSES.includes(status)) {
-    return { error: `status must be one of ${PROJECT_STATUSES.join(", ")}` };
+  const status = String(body.status ?? "idea").trim() as ProjectStatus;
+  if (!UI_STATUSES.includes(status)) {
+    return { error: `status must be one of ${UI_STATUSES.join(", ")}` };
   }
-
-  const deadline = validateDeadline(body.deadline);
-  if ("error" in deadline) return deadline;
-
-  const next_action = toNullableString(body.next_action);
-  if (!next_action) return { error: "next_action is required" };
-
+  const tasks = parseTasks(body.tasks);
   return {
     value: {
       name,
-      type,
-      client: toNullableString(body.client),
-      revenue_potential: rev.value,
-      confidence: conf.value,
-      time_to_cash: ttc.value,
-      effort_remaining: effort,
+      notes: toNullableString(body.description ?? body.notes),
       status,
-      next_action,
-      deadline: deadline.value,
-      notes: toNullableString(body.notes),
+      tasks: tasks.length ? tasks : undefined,
     },
   };
 }
 
-function validateProjectPatchInput(
-  body: Record<string, unknown>
-): { value: ProjectPatch } | { error: string } {
+function validateIdeaPatch(body: Record<string, unknown>): { value: ProjectPatch } | { error: string } {
   const patch: ProjectPatch = {};
-
   if ("name" in body) {
     const name = toNullableString(body.name);
     if (!name) return { error: "name cannot be empty" };
     patch.name = name;
   }
-  if ("type" in body) {
-    const type = String(body.type ?? "").trim() as ProjectType;
-    if (!PROJECT_TYPES.includes(type)) return { error: "type must be 'fast' or 'passive'" };
-    patch.type = type;
+  if ("description" in body || "notes" in body) {
+    patch.notes = toNullableString(body.description ?? body.notes);
   }
   if ("status" in body) {
     const status = String(body.status ?? "").trim() as ProjectStatus;
-    if (!PROJECT_STATUSES.includes(status)) {
-      return { error: `status must be one of ${PROJECT_STATUSES.join(", ")}` };
+    if (!UI_STATUSES.includes(status)) {
+      return { error: `status must be one of ${UI_STATUSES.join(", ")}` };
     }
     patch.status = status;
   }
-  for (const field of ["revenue_potential", "confidence", "time_to_cash"] as const) {
-    if (field in body) {
-      const r = validate1to5(body[field], field);
-      if ("error" in r) return r;
-      patch[field] = r.value;
-    }
-  }
-  if ("effort_remaining" in body) {
-    const effort = toInt(body.effort_remaining);
-    if (effort === null || effort < 0) return { error: "effort_remaining must be a whole number >= 0" };
-    patch.effort_remaining = effort;
-  }
-  if ("deadline" in body) {
-    const d = validateDeadline(body.deadline);
-    if ("error" in d) return d;
-    patch.deadline = d.value;
-  }
-  if ("client" in body) patch.client = toNullableString(body.client);
-  if ("next_action" in body) patch.next_action = toNullableString(body.next_action);
-  if ("notes" in body) patch.notes = toNullableString(body.notes);
-
   return { value: patch };
 }
 
@@ -259,59 +170,62 @@ interface ToolRunResult {
   actions: ChatAction[];
 }
 
-async function runTool(
-  userId: number,
-  name: string,
-  input: unknown
-): Promise<ToolRunResult> {
-  const body =
-    input && typeof input === "object" ? (input as Record<string, unknown>) : {};
+async function runTool(userId: number, name: string, input: unknown): Promise<ToolRunResult> {
+  const body = input && typeof input === "object" ? (input as Record<string, unknown>) : {};
 
-  if (name === "create_project") {
-    const result = validateNewProjectInput(body);
+  if (name === "create_idea" || name === "create_project") {
+    const result = validateNewIdea(body);
     if ("error" in result) return { output: { ok: false, error: result.error }, actions: [] };
     const project = await addProject(userId, result.value);
     return {
       output: {
         ok: true,
-        project: {
+        idea: { id: project.id, name: project.name, status: project.status },
+        tasks_added: result.value.tasks?.length ?? 0,
+      },
+      actions: [
+        {
+          type: "created_project",
           id: project.id,
           name: project.name,
-          type: project.type,
-          status: project.status,
-          next_action: project.next_action,
+          taskCount: result.value.tasks?.length ?? 0,
         },
-      },
-      actions: [{ type: "created_project", id: project.id, name: project.name }],
+      ],
     };
   }
 
-  if (name === "update_project") {
+  if (name === "update_idea" || name === "update_project") {
     const id = toInt(body.id);
     if (id === null) return { output: { ok: false, error: "id must be an integer" }, actions: [] };
-    if (!(await getProject(userId, id))) {
-      return { output: { ok: false, error: `no project #${id}` }, actions: [] };
-    }
-
-    const result = validateProjectPatchInput(body);
+    const result = validateIdeaPatch(body);
     if ("error" in result) return { output: { ok: false, error: result.error }, actions: [] };
     if (Object.keys(result.value).length === 0) {
       return { output: { ok: false, error: "no fields to update" }, actions: [] };
     }
-
     const updated = await updateProject(userId, id, result.value);
-    if (!updated) return { output: { ok: false, error: `failed to update #${id}` }, actions: [] };
+    if (!updated) return { output: { ok: false, error: `no idea #${id}` }, actions: [] };
     return {
-      output: {
-        ok: true,
-        project: {
-          id: updated.id,
-          name: updated.name,
-          status: updated.status,
-          next_action: updated.next_action,
-        },
-      },
+      output: { ok: true, idea: { id: updated.id, name: updated.name, status: updated.status } },
       actions: [{ type: "updated_project", id: updated.id, name: updated.name }],
+    };
+  }
+
+  if (name === "add_tasks") {
+    const projectId = toInt(body.project_id ?? body.id);
+    if (projectId === null) {
+      return { output: { ok: false, error: "project_id must be an integer" }, actions: [] };
+    }
+    const idea = await getProjectWithTasks(userId, projectId);
+    if (!idea) return { output: { ok: false, error: `no idea #${projectId}` }, actions: [] };
+    const tasks = parseTasks(body.tasks);
+    if (!tasks.length) return { output: { ok: false, error: "tasks array is required" }, actions: [] };
+    const added = [];
+    for (const title of tasks) {
+      added.push(await addProjectTask(userId, projectId, title));
+    }
+    return {
+      output: { ok: true, added: added.map((t) => ({ id: t.id, title: t.title })) },
+      actions: [{ type: "added_tasks", id: projectId, name: idea.name, taskCount: added.length }],
     };
   }
 
@@ -332,36 +246,33 @@ export async function buildSystemPrompt(userId: number): Promise<string> {
   const user = await getUserById(userId);
   const stallDays = user?.stall_days ?? 4;
   const goals = await getGoals(userId);
-  const active = await getActiveProjects(userId);
-  const all = await getAllProjects(userId);
-  const allocation = allocateDay(active);
+  const ideas = await getAllProjectsWithTasks(userId);
+  const allocation = allocateDay(ideas);
   const stalled = await getStalledProjects(userId, stallDays);
 
   const lines: string[] = [];
 
   lines.push(
-    "You are the AI assistant for Concierge — a personal assistant and business analyst for a solo developer building a freelance/dev business on the side of a full-time job.",
+    "You are the AI assistant for Concierge — a productivity partner for capturing ideas and breaking them into actionable tasks.",
     "",
-    "How you think:",
-    "- The user is time-poor: ~1 hour on weeknights, more on weekends. Keep suggestions realistic for that.",
-    "- Two project tracks: 'fast' = client/services/paid software = income, ALWAYS the priority; 'passive' = ads/affiliate/own products = long game, only with leftover time.",
-    "- Never dump the whole task list. Surface the ONE highest-leverage next move, then a little supporting context.",
-    "- Priority score = (revenue_potential * confidence * (6 - time_to_cash)) / max(effort_remaining, 1). Higher = do sooner.",
-    "- Be concrete and concise. No motivational fluff. Sharpen vague next actions into specific, shippable steps. Help rank, plan, and unblock.",
+    "How you work:",
+    "- The user tracks **ideas** (general concepts, projects, experiments) each with a description and a list of **tasks**.",
+    "- Your main job: suggest concrete, small tasks that move an idea forward. Think next physical actions, not vague goals.",
+    "- When an idea is thin, ask one clarifying question OR propose 3-5 starter tasks and offer to add them.",
+    "- Prefer adding tasks via tools when the user agrees ('yes', 'add those', 'sounds good').",
+    "- Be concise. No motivational fluff. Tasks should be doable in an evening or weekend session.",
     "",
-    "Tools — you can change the database:",
-    "- create_project: add a new project when the user wants one tracked, or when they agree to a project you propose. Fill in sensible 1-5 scores; default status active. next_action is required.",
-    "- update_project: change next_action, status, scores, etc. on an existing project by id.",
-    "- create_goal: add a north-star goal when the user wants one or agrees to your suggestion.",
-    "- When the user is vague, ask a quick clarifying question OR propose one concrete project and offer to add it.",
-    "- When they say 'add it', 'create that', 'track this', or clearly accept a proposal, call the tool — don't just describe what you would add.",
-    "- After creating/updating, confirm briefly what you saved (id + name + next action).",
+    "Tools:",
+    "- create_idea: new idea + optional description + starter tasks",
+    "- update_idea: change title, description, or status",
+    "- add_tasks: append tasks to an existing idea by project_id",
+    "- create_goal: add a north-star goal",
     ""
   );
 
   lines.push("# Goals");
   if (goals.length === 0) {
-    lines.push("(none set yet — encourage the user to define one)");
+    lines.push("(none — help the user define one if useful)");
   } else {
     for (const g of goals) {
       lines.push(`- #${g.id} ${g.title}${g.detail ? ` — ${g.detail}` : ""}`);
@@ -369,63 +280,39 @@ export async function buildSystemPrompt(userId: number): Promise<string> {
   }
   lines.push("");
 
-  lines.push("# Active projects");
-  if (active.length === 0) {
-    lines.push("(no active projects)");
+  lines.push("# Ideas and tasks");
+  if (ideas.length === 0) {
+    lines.push("(none yet — encourage capturing a rough idea and breaking it into tasks)");
   } else {
-    for (const p of active) {
-      const bits = [
-        `score ${round1(score(p))}`,
-        `rev ${p.revenue_potential}/5`,
-        `conf ${p.confidence}/5`,
-        `time_to_cash ${p.time_to_cash}/5`,
-        `~${p.effort_remaining}h left`,
-      ];
-      if (p.deadline) bits.push(`deadline ${p.deadline}`);
-      if (p.last_progress_at) {
-        const d = daysSince(p.last_progress_at);
-        if (d !== null) bits.push(`${d}d since progress`);
+    for (const idea of ideas) {
+      const open = idea.tasks.filter((t) => !t.done);
+      const done = idea.tasks.filter((t) => t.done);
+      lines.push(`- #${idea.id} [${idea.status}] ${idea.name}`);
+      if (idea.notes) lines.push(`    description: ${idea.notes}`);
+      if (open.length) {
+        lines.push(`    open tasks: ${open.map((t) => `"${t.title}"`).join("; ")}`);
+      } else {
+        lines.push("    open tasks: (none — suggest some!)");
       }
-      lines.push(
-        `- #${p.id} [${p.type}] ${p.name}${p.client ? ` (client: ${p.client})` : ""} — ${bits.join(", ")}`
-      );
-      lines.push(`    next: ${p.next_action ?? "(none set)"}`);
-      if (p.notes) lines.push(`    notes: ${p.notes}`);
+      if (done.length) lines.push(`    done: ${done.length} task(s)`);
     }
   }
   lines.push("");
 
-  const nonActive = all.filter((p) => p.status !== "active");
-  if (nonActive.length > 0) {
-    lines.push("# Other projects (not active)");
-    for (const p of nonActive) {
-      lines.push(`- #${p.id} [${p.type}] ${p.name} — status: ${p.status}`);
-    }
-    lines.push("");
-  }
-
-  lines.push("# Today's allocation (computed by the formula)");
+  lines.push("# Suggested focus today");
   if (allocation.primary) {
-    lines.push(
-      `- PRIMARY (income): #${allocation.primary.project.id} ${allocation.primary.project.name} — ${allocation.primary.project.next_action ?? "(no next action)"}`
-    );
+    const { project, task } = allocation.primary;
+    lines.push(`- #${project.id} ${project.name} → ${task?.title ?? "(add a task)"}`);
   } else {
-    lines.push("- PRIMARY: none — no active fast/income projects. Push the user to find/close a client.");
+    lines.push("- No open tasks — suggest new ideas or tasks for existing ideas.");
   }
   if (allocation.secondary) {
     lines.push(
-      `- Secondary (passive, max 30 min): #${allocation.secondary.project.id} ${allocation.secondary.project.name}`
-    );
-  }
-  if (allocation.deadlineWarnings.length > 0) {
-    lines.push(
-      `- Deadlines within 3 days: ${allocation.deadlineWarnings.map((p) => `${p.name} (${p.deadline})`).join("; ")}`
+      `- Spare time: #${allocation.secondary.project.id} ${allocation.secondary.project.name}`
     );
   }
   if (stalled.length > 0) {
-    lines.push(
-      `- Stalling (no progress in ${stallDays}+ days): ${stalled.map((p) => p.name).join("; ")}`
-    );
+    lines.push(`- Stalling (${stallDays}+ days): ${stalled.map((p) => p.name).join("; ")}`);
   }
 
   return lines.join("\n");
@@ -437,6 +324,57 @@ function extractText(content: Anthropic.ContentBlock[]): string {
     .map((block) => block.text)
     .join("\n")
     .trim();
+}
+
+function parseSuggestionLines(text: string): string[] {
+  return text
+    .split("\n")
+    .map((line) => line.replace(/^[\s\-*•\d.)]+/, "").trim())
+    .filter((line) => line.length > 3 && line.length < 200);
+}
+
+/** One-shot AI call to suggest tasks for a single idea. */
+export async function suggestTasksForProject(
+  config: Config,
+  userId: number,
+  projectId: number
+): Promise<string[]> {
+  if (!isAiConfigured(config)) {
+    throw new Error("AI not configured (set ANTHROPIC_API_KEY).");
+  }
+
+  const idea = await getProjectWithTasks(userId, projectId);
+  if (!idea) throw new Error("Idea not found");
+
+  const open = idea.tasks.filter((t) => !t.done).map((t) => t.title);
+  const done = idea.tasks.filter((t) => t.done).map((t) => t.title);
+
+  const client = new Anthropic({ apiKey: config.anthropicApiKey });
+  const response = await client.messages.create({
+    model: config.anthropicModel,
+    max_tokens: 1024,
+    system:
+      "You suggest concrete, actionable tasks for ideas. Return ONLY a plain list — one task per line, no numbering, no intro. Each task should be doable in under 2 hours. Do not repeat existing tasks.",
+    messages: [
+      {
+        role: "user",
+        content: [
+          `Idea: ${idea.name}`,
+          idea.notes ? `Description: ${idea.notes}` : "",
+          open.length ? `Existing open tasks: ${open.join("; ")}` : "No open tasks yet.",
+          done.length ? `Already done: ${done.join("; ")}` : "",
+          "",
+          "Suggest 4-6 new tasks to move this idea forward.",
+        ]
+          .filter(Boolean)
+          .join("\n"),
+      },
+    ],
+  });
+
+  const text = extractText(response.content);
+  const lines = parseSuggestionLines(text);
+  return lines.slice(0, 8);
 }
 
 export async function chat(
@@ -497,7 +435,7 @@ export async function chat(
   }
 
   return {
-    reply: "I hit the tool-use limit for this turn. Check the Manage tab — your changes may have been saved.",
+    reply: "I hit the tool-use limit for this turn. Check your workspace — changes may have been saved.",
     actions,
   };
 }

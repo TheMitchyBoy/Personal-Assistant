@@ -1,29 +1,14 @@
 /**
- * Telegram message formatting.
- *
- * Turns scored projects into human-readable strings for `/today`, scheduled
- * nudges, and stall warnings. All paths call scoring.ts so bot and scheduler
- * stay in sync with the same allocation logic.
+ * Telegram message formatting for ideas and tasks.
  */
-import { allocateDay, daysUntil, daysSince, score as scoreOf, type DayAllocation } from "./scoring.js";
-import { getActiveProjects, getStalledProjects, type Project } from "./db.js";
+import { allocateDay, daysSince, type DayAllocation } from "./scoring.js";
+import {
+  getAllProjectsWithTasks,
+  getStalledProjects,
+  type ProjectWithTasks,
+} from "./db.js";
 
-function roundScore(n: number): string {
-  return (Math.round(n * 10) / 10).toString();
-}
-
-function deadlineLine(p: Project): string {
-  const d = daysUntil(p.deadline!);
-  let when: string;
-  if (d === null) when = p.deadline!;
-  else if (d < 0) when = `${Math.abs(d)}d overdue`;
-  else if (d === 0) when = "today";
-  else if (d === 1) when = "tomorrow";
-  else when = `in ${d}d`;
-  return `• ${p.name} (#${p.id}) — due ${when}`;
-}
-
-function stallLine(p: Project): string {
+function stallLine(p: { id: number; name: string; last_progress_at: string | null }): string {
   if (!p.last_progress_at) {
     return `\u2022 ${p.name} (#${p.id}) — no recorded progress yet`;
   }
@@ -42,51 +27,44 @@ export async function buildStallSection(
   for (const p of stalled) {
     lines.push(stallLine(p));
   }
-  if (stalled.some((p) => p.type === "passive")) {
-    lines.push("Passive projects: quietly letting them rot is how they die.");
-  }
+  lines.push("Pick one small task and move an idea forward today.");
   return lines.join("\n");
 }
 
 export async function formatDailyMessage(
   userId: number,
   stallDays: number | null = null,
-  allocation?: DayAllocation
+  allocation?: DayAllocation,
+  projectsWithTasks?: ProjectWithTasks[]
 ): Promise<string> {
-  const active = await getActiveProjects(userId);
-  const alloc = allocation ?? allocateDay(active);
+  const all = projectsWithTasks ?? (await getAllProjectsWithTasks(userId));
+  const alloc = allocation ?? allocateDay(all);
   const lines: string[] = ["\u2600\uFE0F Today's focus", ""];
 
-  if (alloc.deadlineWarnings.length > 0) {
-    lines.push("\uD83D\uDEA8 On the horizon:");
-    for (const p of alloc.deadlineWarnings) {
-      lines.push(deadlineLine(p));
-    }
-    lines.push("");
-  }
-
   if (alloc.primary) {
-    const { project, score } = alloc.primary;
-    lines.push(`\uD83D\uDCB0 PRIMARY (income): ${project.name}`);
-    lines.push(`\u2192 ${project.next_action ?? "(no next action set)"}`);
-    lines.push(`Why: closest to getting paid (score ${roundScore(score)}).`);
-  } else if (alloc.noFastWork) {
-    lines.push("\uD83D\uDCB0 PRIMARY (income): none.");
-    lines.push(
-      "No active fast/income projects. Go find or close a client today — don't coast on passive work."
-    );
+    const { project, task } = alloc.primary;
+    lines.push(`\uD83D\uDCA1 Idea: ${project.name}`);
+    if (task) {
+      lines.push(`\u2192 ${task.title}`);
+    } else {
+      lines.push(`\u2192 Add a task to this idea, or pick up where you left off.`);
+    }
+  } else if (alloc.openTaskCount === 0) {
+    lines.push("\uD83D\uDCA1 No open tasks on your ideas.");
+    lines.push("Capture a new idea with /add or ask the dashboard AI to suggest tasks.");
+  } else {
+    lines.push("\uD83D\uDCA1 No active ideas with tasks — review your list and activate one.");
   }
 
   if (alloc.secondary) {
-    const { project } = alloc.secondary;
+    const { project, task } = alloc.secondary;
     lines.push("");
-    lines.push(`\uD83C\uDF31 If you have 30 min spare: ${project.name}`);
-    lines.push(`\u2192 ${project.next_action ?? "(no next action set)"}`);
-    lines.push("(only if you have time after the above)");
+    lines.push(`\u2728 If you have spare time: ${project.name}`);
+    lines.push(`\u2192 ${task?.title ?? "(add a task)"}`);
   }
 
   lines.push("");
-  lines.push("Reply /done {id} when you finish something.");
+  lines.push("Reply /done {id} when you finish a task on an idea.");
 
   if (stallDays !== null) {
     const stallSection = await buildStallSection(userId, stallDays);
@@ -100,15 +78,16 @@ export async function formatDailyMessage(
 }
 
 export async function formatProjectList(userId: number): Promise<string> {
-  const active = await getActiveProjects(userId);
+  const all = await getAllProjectsWithTasks(userId);
+  const active = all.filter((p) => p.status === "active" || p.status === "idea");
   if (active.length === 0) {
-    return "No active projects. Use /add to create one.";
+    return "No ideas yet. Use /add to capture one.";
   }
   return active
     .map((p) => {
-      const s = roundScore(scoreOf(p));
-      const type = p.type === "fast" ? "\uD83D\uDCB0fast" : "\uD83C\uDF31passive";
-      return `#${p.id} ${p.name} [${type}] score ${s}`;
+      const open = p.tasks.filter((t) => !t.done).length;
+      const done = p.tasks.filter((t) => t.done).length;
+      return `#${p.id} ${p.name} [${p.status}] — ${open} open, ${done} done`;
     })
     .join("\n");
 }

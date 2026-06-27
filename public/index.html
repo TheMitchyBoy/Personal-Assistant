@@ -301,6 +301,174 @@
       .stat-value.fast { color: var(--fast); }
       .stat-value.passive { color: var(--passive); }
 
+      /* ── Idea cards & tasks ── */
+      .idea-card {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-xl);
+        padding: 22px;
+        backdrop-filter: blur(12px);
+        transition: border-color 0.2s, box-shadow 0.2s;
+      }
+
+      .idea-card:hover {
+        border-color: var(--border-strong);
+        box-shadow: var(--shadow);
+      }
+
+      .idea-card-head {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 12px;
+        margin-bottom: 14px;
+      }
+
+      .idea-card-head h3 {
+        margin: 0;
+        font-size: 17px;
+        font-weight: 700;
+        letter-spacing: -0.02em;
+        line-height: 1.3;
+      }
+
+      .idea-meta {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+        margin-top: 6px;
+      }
+
+      .task-section {
+        margin-top: 16px;
+        padding-top: 16px;
+        border-top: 1px solid var(--border);
+      }
+
+      .task-section-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 10px;
+      }
+
+      .task-section-head label {
+        margin: 0;
+        font-size: 11px;
+      }
+
+      .task-list {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        margin-bottom: 10px;
+      }
+
+      .task-row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 8px 10px;
+        border-radius: var(--radius-xs);
+        background: var(--bg-subtle);
+        border: 1px solid var(--border);
+        transition: background 0.15s, border-color 0.15s;
+      }
+
+      .task-row:hover { border-color: var(--border-strong); }
+
+      .task-row.done {
+        opacity: 0.55;
+      }
+
+      .task-row.done .task-title {
+        text-decoration: line-through;
+        color: var(--text-3);
+      }
+
+      .task-check {
+        width: 18px;
+        height: 18px;
+        accent-color: var(--accent);
+        cursor: pointer;
+        flex-shrink: 0;
+      }
+
+      .task-title {
+        flex: 1;
+        font-size: 13px;
+        line-height: 1.4;
+        min-width: 0;
+        word-break: break-word;
+      }
+
+      .task-del {
+        padding: 4px 8px;
+        font-size: 11px;
+        background: transparent;
+        border: none;
+        color: var(--text-3);
+        cursor: pointer;
+      }
+
+      .task-del:hover { color: var(--danger); }
+
+      .task-add-row {
+        display: flex;
+        gap: 8px;
+      }
+
+      .task-add-row input { flex: 1; }
+
+      .suggest-box {
+        margin-top: 12px;
+        padding: 12px;
+        border-radius: var(--radius);
+        background: var(--accent-subtle);
+        border: 1px solid rgba(139, 92, 246, 0.2);
+      }
+
+      .suggest-box p {
+        margin: 0 0 10px;
+        font-size: 12px;
+        color: var(--text-2);
+      }
+
+      .suggest-chips {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+
+      .suggest-chip {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        padding: 8px 10px;
+        border-radius: var(--radius-xs);
+        background: var(--bg-elevated);
+        border: 1px solid var(--border);
+        font-size: 13px;
+      }
+
+      .suggest-chip button {
+        padding: 4px 10px;
+        font-size: 11px;
+      }
+
+      .idea-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 16px;
+        padding-top: 16px;
+        border-top: 1px solid var(--border);
+      }
+
+      .idea-actions .spacer { flex: 1; }
+
       .focus-banner {
         background: linear-gradient(135deg, rgba(139, 92, 246, 0.14), rgba(99, 102, 241, 0.08));
         border: 1px solid rgba(139, 92, 246, 0.22);
@@ -1068,20 +1236,20 @@
       <div class="auth-layout">
         <div class="auth-hero">
           <div class="brand-icon"><svg><use href="#icon-brand"/></svg></div>
-          <h1>Focus on what pays.</h1>
-          <p class="hero-lead">Concierge scores your projects, picks one income priority per day, and keeps you accountable via Telegram.</p>
+          <h1>Capture ideas. Ship tasks.</h1>
+          <p class="hero-lead">Concierge helps you jot down rough ideas, break them into tasks, and get AI suggestions for what to do next.</p>
           <div class="feature-list">
             <div class="feature-item">
               <div class="feature-icon"><svg><use href="#icon-zap"/></svg></div>
-              <div><strong>Dual-track prioritization</strong><span>Income work always comes first. Passive projects only with spare time.</span></div>
+              <div><strong>Ideas + tasks</strong><span>Each idea holds a description and a checklist of concrete next steps.</span></div>
+            </div>
+            <div class="feature-item">
+              <div class="feature-icon"><svg><use href="#icon-bot"/></svg></div>
+              <div><strong>AI task suggestions</strong><span>Ask the assistant to propose tasks that move your ideas forward.</span></div>
             </div>
             <div class="feature-item">
               <div class="feature-icon"><svg><use href="#icon-clock"/></svg></div>
-              <div><strong>Daily nudges</strong><span>Morning focus message and evening check-in, timed to your timezone.</span></div>
-            </div>
-            <div class="feature-item">
-              <div class="feature-icon"><svg><use href="#icon-check"/></svg></div>
-              <div><strong>Stall detection</strong><span>Surfaces projects losing momentum before they quietly die.</span></div>
+              <div><strong>Daily nudges</strong><span>Morning focus and evening check-in via Telegram.</span></div>
             </div>
           </div>
         </div>
@@ -1140,7 +1308,7 @@
               <div class="user-avatar" id="user-avatar">?</div>
               <div class="user-meta">
                 <div class="user-email" id="sidebar-email">—</div>
-                <div class="user-plan">Side hustle mode</div>
+                <div class="user-plan">Ideas workspace</div>
               </div>
             </div>
             <button class="ghost" style="width:100%;justify-content:center" onclick="logout()">
@@ -1153,7 +1321,7 @@
         <div class="main-area">
           <div class="page-header" id="page-header">
             <h1 id="page-title">Workspace</h1>
-            <p id="page-subtitle">Manage goals and projects. Concierge picks your daily focus.</p>
+            <p id="page-subtitle">Capture ideas, manage tasks, and let AI suggest what to do next.</p>
           </div>
 
           <main>
@@ -1172,7 +1340,7 @@
 
               <div class="stats-row" id="stats-row">
                 <div class="stat-card">
-                  <div class="stat-label">Projects</div>
+                  <div class="stat-label">Ideas</div>
                   <div class="stat-value mono" id="stat-total">0</div>
                 </div>
                 <div class="stat-card">
@@ -1180,12 +1348,12 @@
                   <div class="stat-value accent" id="stat-active">0</div>
                 </div>
                 <div class="stat-card">
-                  <div class="stat-label">Income</div>
-                  <div class="stat-value fast" id="stat-fast">0</div>
+                  <div class="stat-label">Open tasks</div>
+                  <div class="stat-value fast" id="stat-open-tasks">0</div>
                 </div>
                 <div class="stat-card">
-                  <div class="stat-label">Passive</div>
-                  <div class="stat-value passive" id="stat-passive">0</div>
+                  <div class="stat-label">Done tasks</div>
+                  <div class="stat-value passive" id="stat-done-tasks">0</div>
                 </div>
               </div>
 
@@ -1207,12 +1375,12 @@
               <div class="section-block">
                 <div class="section-head">
                   <h2>
-                    Projects
+                    Ideas
                     <span id="projects-count" class="count">0</span>
                   </h2>
                   <button class="primary" onclick="addProject()">
                     <svg><use href="#icon-plus"/></svg>
-                    Add project
+                    New idea
                   </button>
                 </div>
                 <div id="projects" class="grid"></div>
@@ -1296,8 +1464,8 @@
       let currentUser = null;
 
       const PAGE_TITLES = {
-        manage: { title: "Workspace", subtitle: "Manage goals and projects. Concierge picks your daily focus." },
-        assistant: { title: "Assistant", subtitle: "Your AI business analyst with live portfolio context." },
+        manage: { title: "Workspace", subtitle: "Capture ideas, manage tasks, and let AI suggest what to do next." },
+        assistant: { title: "Assistant", subtitle: "Get task suggestions and help breaking ideas into actionable steps." },
         settings: { title: "Settings", subtitle: "Account, schedule, and Telegram integration." },
       };
 
@@ -1379,107 +1547,135 @@
         return data;
       }
 
-      const STATUSES = ["idea", "active", "blocked", "shipped", "paid", "archived"];
-      const TYPES = ["fast", "passive"];
-      const TYPE_LABELS = { fast: "income", passive: "passive" };
+      const STATUSES = [
+        { value: "idea", label: "idea" },
+        { value: "active", label: "active" },
+        { value: "blocked", label: "on hold" },
+        { value: "shipped", label: "done" },
+        { value: "archived", label: "archived" },
+      ];
 
-      function scoreOf(p) {
-        const speed = 6 - Number(p.time_to_cash);
-        const s = (Number(p.revenue_potential) * Number(p.confidence) * speed) / Math.max(Number(p.effort_remaining), 1);
-        return Math.round(s * 10) / 10;
+      function statusOpts(selected) {
+        return STATUSES.map((s) => `<option value="${s.value}" ${s.value === selected ? "selected" : ""}>${s.label}</option>`).join("");
       }
 
-      function esc(s) {
-        return (s ?? "").toString().replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-      }
-
-      function selectOpts(options, selected) {
-        return options.map((o) => `<option value="${o}" ${o === selected ? "selected" : ""}>${o}</option>`).join("");
+      function countTasks(projects) {
+        let open = 0;
+        let done = 0;
+        for (const p of projects) {
+          for (const t of p.tasks || []) {
+            if (t.done) done++;
+            else open++;
+          }
+        }
+        return { open, done };
       }
 
       function updateFocusBanner(projects) {
         const banner = $("focus-banner");
-        const active = projects.filter((p) => p.status === "active");
-        const fast = active.filter((p) => p.type === "fast").sort((a, b) => scoreOf(b) - scoreOf(a));
-        const passive = active.filter((p) => p.type === "passive").sort((a, b) => scoreOf(b) - scoreOf(a));
+        const active = projects.filter((p) => p.status === "active" || p.status === "idea");
+        const { open, done } = countTasks(projects);
 
         $("stat-total").textContent = projects.length;
         $("stat-active").textContent = active.length;
-        $("stat-fast").textContent = active.filter((p) => p.type === "fast").length;
-        $("stat-passive").textContent = active.filter((p) => p.type === "passive").length;
+        $("stat-open-tasks").textContent = open;
+        $("stat-done-tasks").textContent = done;
+
+        const ranked = active
+          .filter((p) => (p.tasks || []).some((t) => !t.done))
+          .sort((a, b) => {
+            if (a.status === "active" && b.status !== "active") return -1;
+            if (b.status === "active" && a.status !== "active") return 1;
+            return 0;
+          });
 
         banner.classList.remove("hidden", "empty");
 
-        if (fast.length > 0) {
-          const top = fast[0];
+        if (ranked.length > 0) {
+          const top = ranked[0];
+          const task = (top.tasks || []).find((t) => !t.done);
           banner.classList.remove("empty");
           $("focus-title").textContent = top.name;
-          $("focus-action").innerHTML = top.next_action
-            ? `<strong>Next:</strong> ${esc(top.next_action)}`
-            : "Set a next action to sharpen today's focus.";
-        } else if (active.length > 0) {
+          $("focus-action").innerHTML = task
+            ? `<strong>Next task:</strong> ${esc(task.title)}`
+            : "Add a task to sharpen your focus.";
+        } else if (projects.length === 0) {
           banner.classList.add("empty");
-          $("focus-title").textContent = "No income projects active";
-          $("focus-action").textContent = "Add or activate a fast/income project — don't coast on passive work.";
+          $("focus-title").textContent = "Start with an idea";
+          $("focus-action").textContent = "Capture something you're exploring — then add tasks or ask AI for suggestions.";
         } else {
           banner.classList.add("empty");
-          $("focus-title").textContent = "No active projects";
-          $("focus-action").textContent = "Add a project to get your first daily focus recommendation.";
+          $("focus-title").textContent = "No open tasks";
+          $("focus-action").textContent = "Add tasks to your ideas, or use Suggest tasks to get AI recommendations.";
         }
+      }
 
-        if (passive.length > 0 && fast.length > 0) {
-          const sec = passive[0];
-          $("focus-action").innerHTML += sec.next_action
-            ? `<br><span style="color:var(--text-3);font-size:13px;margin-top:6px;display:inline-block">Spare 30 min? ${esc(sec.name)} — ${esc(sec.next_action)}</span>`
-            : "";
+      function renderTaskList(projectId, tasks) {
+        if (!tasks.length) {
+          return '<p class="muted" style="font-size:13px;margin:0">No tasks yet — add one below or ask AI to suggest some.</p>';
         }
+        return `<div class="task-list">${tasks
+          .map(
+            (t) => `
+          <div class="task-row ${t.done ? "done" : ""}" data-task-id="${t.id}">
+            <input type="checkbox" class="task-check" ${t.done ? "checked" : ""} onchange="toggleTask(${projectId}, ${t.id}, this.checked)" />
+            <span class="task-title">${esc(t.title)}</span>
+            <button type="button" class="task-del" onclick="deleteTask(${projectId}, ${t.id})" title="Remove">✕</button>
+          </div>`
+          )
+          .join("")}</div>`;
       }
 
       function projectCard(p) {
         const isNew = !p.id;
-        const type = p.type || "fast";
-        const status = p.status || "active";
+        const status = p.status || "idea";
+        const tasks = p.tasks || [];
+        const openCount = tasks.filter((t) => !t.done).length;
         return `
-        <div class="card ${esc(type)}" data-id="${p.id || ""}">
-          <div class="card-head">
-            <div class="card-meta">
-              <span class="pill">${p.id ? "#" + p.id : "new"}</span>
-              <span class="pill type-${esc(type)}">${TYPE_LABELS[type] || type}</span>
+        <div class="idea-card" data-id="${p.id || ""}">
+          <div class="idea-card-head">
+            <div style="flex:1;min-width:0">
+              <h3>${isNew ? "New idea" : esc(p.name) || "Untitled"}</h3>
+              <div class="idea-meta">
+                ${p.id ? `<span class="pill">#${p.id}</span>` : ""}
+                <span class="pill">${openCount} open</span>
+              </div>
             </div>
-            <span class="score" title="priority score">${p.id || p.name ? scoreOf(p) : "—"}</span>
+            ${!isNew ? `<select data-k="status" style="width:auto;min-width:110px" onchange="markDirty(this)">${statusOpts(status)}</select>` : ""}
           </div>
-          <div class="field"><label>Name</label><input data-k="name" value="${esc(p.name)}" placeholder="Project name" /></div>
-          <div class="row">
-            <div class="field"><label>Type</label><select data-k="type" onchange="updateTypePill(this)">${selectOpts(TYPES, type)}</select></div>
-            <div class="field"><label>Status</label><select data-k="status">${selectOpts(STATUSES, status)}</select></div>
+          <div class="field" style="margin-bottom:0">
+            <label>Title</label>
+            <input data-k="name" value="${esc(p.name)}" placeholder="What's the idea?" oninput="markDirty(this)" />
           </div>
-          <div class="field"><label>Client</label><input data-k="client" value="${esc(p.client)}" placeholder="Client name (optional)" /></div>
-          <div class="row-3">
-            <div class="field"><label>Revenue 1–5</label><input data-k="revenue_potential" type="number" min="1" max="5" value="${esc(p.revenue_potential ?? 3)}" /></div>
-            <div class="field"><label>Confidence 1–5</label><input data-k="confidence" type="number" min="1" max="5" value="${esc(p.confidence ?? 3)}" /></div>
-            <div class="field"><label>Time→cash 1–5</label><input data-k="time_to_cash" type="number" min="1" max="5" value="${esc(p.time_to_cash ?? 3)}" /></div>
+          <div class="field">
+            <label>Description</label>
+            <textarea data-k="notes" placeholder="What are you exploring? Why does it matter?" oninput="markDirty(this)">${esc(p.notes)}</textarea>
           </div>
-          <div class="row">
-            <div class="field"><label>Effort (hrs left)</label><input data-k="effort_remaining" type="number" min="0" value="${esc(p.effort_remaining ?? 8)}" /></div>
-            <div class="field"><label>Deadline</label><input data-k="deadline" type="date" value="${esc(p.deadline)}" /></div>
+          ${isNew ? `<div class="field"><label>Status</label><select data-k="status">${statusOpts(status)}</select></div>` : ""}
+          <div class="task-section">
+            <div class="task-section-head">
+              <label>Tasks</label>
+            </div>
+            ${isNew ? '<p class="muted" style="font-size:13px;margin:0 0 10px">Save the idea first, then add tasks.</p>' : renderTaskList(p.id, tasks)}
+            ${!isNew ? `
+            <div class="task-add-row">
+              <input id="task-input-${p.id}" placeholder="Add a task…" onkeydown="if(event.key==='Enter'){event.preventDefault();addTask(${p.id})}" />
+              <button onclick="addTask(${p.id})">Add</button>
+            </div>
+            <div id="suggest-${p.id}"></div>` : ""}
           </div>
-          <div class="field"><label>Next action</label><textarea data-k="next_action" placeholder="What's the very next step?">${esc(p.next_action)}</textarea></div>
-          <div class="field"><label>Notes</label><textarea data-k="notes" placeholder="Additional context…">${esc(p.notes)}</textarea></div>
-          <div class="card-actions">
-            <button class="primary" onclick="saveProject(this)">${isNew ? "Create" : "Save"}</button>
+          <div class="idea-actions">
+            <button class="primary" onclick="saveProject(this)">${isNew ? "Create idea" : "Save"}</button>
+            ${!isNew ? `<button onclick="suggestTasks(${p.id})">Suggest tasks</button>` : ""}
             <span class="spacer"></span>
             <button class="danger" onclick="${isNew ? "removeNewCard(this)" : "deleteProject(this)"}">${isNew ? "Discard" : "Delete"}</button>
           </div>
         </div>`;
       }
 
-      function updateTypePill(sel) {
-        const card = sel.closest(".card");
-        card.classList.remove("fast", "passive");
-        card.classList.add(sel.value);
-      }
+      function markDirty() { /* visual-only; save is explicit */ }
 
-      function collectCard(cardEl) {
+      function collectIdea(cardEl) {
         const out = {};
         cardEl.querySelectorAll("[data-k]").forEach((el) => {
           out[el.dataset.k] = el.value;
@@ -1487,12 +1683,16 @@
         return out;
       }
 
+      function esc(s) {
+        return (s ?? "").toString().replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+      }
+
       async function loadProjects() {
         const list = await api("GET", "/projects");
         $("projects-count").textContent = list.length;
         updateFocusBanner(list);
         if (list.length === 0) {
-          $("projects").innerHTML = '<div class="empty-state">No projects yet — add one to get started.</div>';
+          $("projects").innerHTML = '<div class="empty-state">No ideas yet — capture something you\'re exploring.</div>';
         } else {
           $("projects").innerHTML = list.map(projectCard).join("");
         }
@@ -1502,16 +1702,16 @@
         const empty = $("projects").querySelector(".empty-state");
         if (empty) empty.remove();
         const wrap = document.createElement("div");
-        wrap.innerHTML = projectCard({ type: "fast", status: "active" });
+        wrap.innerHTML = projectCard({ status: "idea", tasks: [] });
         $("projects").prepend(wrap.firstElementChild);
       }
 
-      function removeNewCard(btn) { btn.closest(".card").remove(); }
+      function removeNewCard(btn) { btn.closest(".idea-card").remove(); }
 
       async function saveProject(btn) {
-        const card = btn.closest(".card");
+        const card = btn.closest(".idea-card");
         const id = card.dataset.id;
-        const body = collectCard(card);
+        const body = collectIdea(card);
         try {
           if (id) {
             await api("PATCH", "/projects/" + id, body);
@@ -1526,11 +1726,99 @@
       }
 
       async function deleteProject(btn) {
-        const card = btn.closest(".card");
-        if (!confirm("Delete project #" + card.dataset.id + "?")) return;
+        const card = btn.closest(".idea-card");
+        if (!confirm("Delete idea #" + card.dataset.id + " and all its tasks?")) return;
         try {
           await api("DELETE", "/projects/" + card.dataset.id);
           toast("Deleted");
+          await loadProjects();
+        } catch (e) {
+          toast(e.message, true);
+        }
+      }
+
+      async function addTask(projectId) {
+        const input = $("task-input-" + projectId);
+        const title = input?.value?.trim();
+        if (!title) return;
+        try {
+          await api("POST", "/projects/" + projectId + "/tasks", { title });
+          input.value = "";
+          toast("Task added");
+          await loadProjects();
+        } catch (e) {
+          toast(e.message, true);
+        }
+      }
+
+      async function toggleTask(projectId, taskId, done) {
+        try {
+          await api("PATCH", "/tasks/" + taskId, { done });
+          await loadProjects();
+        } catch (e) {
+          toast(e.message, true);
+          await loadProjects();
+        }
+      }
+
+      async function deleteTask(projectId, taskId) {
+        try {
+          await api("DELETE", "/tasks/" + taskId);
+          toast("Task removed");
+          await loadProjects();
+        } catch (e) {
+          toast(e.message, true);
+        }
+      }
+
+      async function suggestTasks(projectId) {
+        const box = $("suggest-" + projectId);
+        if (!box) return;
+        box.innerHTML = '<p class="muted" style="font-size:13px">Thinking…</p>';
+        try {
+          const data = await api("POST", "/projects/" + projectId + "/suggest-tasks", {});
+          if (!data.suggestions?.length) {
+            box.innerHTML = '<p class="muted" style="font-size:13px">No suggestions returned.</p>';
+            return;
+          }
+          box.innerHTML = `
+            <div class="suggest-box">
+              <p>AI suggestions — click to add:</p>
+              <div class="suggest-chips">
+                ${data.suggestions.map((s, i) => `
+                  <div class="suggest-chip">
+                    <span>${esc(s)}</span>
+                    <button data-project-id="${projectId}" data-title="${esc(s)}" onclick="addSuggestedTaskFromBtn(this)">Add</button>
+                  </div>`).join("")}
+              </div>
+              <button class="primary" style="margin-top:10px;width:100%;justify-content:center" onclick="addAllSuggestions(${projectId})">Add all</button>
+            </div>`;
+        } catch (e) {
+          box.innerHTML = `<p style="color:var(--danger);font-size:13px">${esc(e.message)}</p>`;
+        }
+      }
+
+      async function addSuggestedTaskFromBtn(btn) {
+        const projectId = Number(btn.dataset.projectId);
+        const title = btn.dataset.title;
+        if (!projectId || !title) return;
+        await addSuggestedTask(projectId, title);
+      }
+
+      async function addSuggestedTask(projectId, title) {
+        try {
+          await api("POST", "/projects/" + projectId + "/tasks", { title });
+          toast("Task added");
+          await loadProjects();
+        } catch (e) {
+          toast(e.message, true);
+        }
+      }
+
+      async function addAllSuggestions(projectId) {
+        try {
+          await api("POST", "/projects/" + projectId + "/suggest-tasks", { add: true });
+          toast("Tasks added");
           await loadProjects();
         } catch (e) {
           toast(e.message, true);
@@ -1774,11 +2062,11 @@
             return;
           }
           renderChatEmpty(
-            "Ask anything about your goals and projects — it can add or update them for you.",
+            "Ask me to suggest tasks for your ideas, break down a concept, or add a new idea with starter tasks.",
             [
-              "What should I focus on tonight? I have about an hour.",
-              "I want to build a paid API wrapper — add it as a project.",
-              "Help me decide what fast-income project to start and create it.",
+              "Suggest tasks for my most promising idea.",
+              "I want to start a newsletter — create the idea with tasks.",
+              "Which idea should I work on tonight and what should I do?",
             ]
           );
         } catch (e) {
@@ -1812,9 +2100,10 @@
       function formatActions(actions) {
         if (!actions || !actions.length) return "";
         return actions.map((a) => {
-          if (a.type === "created_project") return `Added project #${a.id}: ${a.name}`;
-          if (a.type === "updated_project") return `Updated project #${a.id}: ${a.name}`;
+          if (a.type === "created_project") return `Added idea #${a.id}: ${a.name}`;
+          if (a.type === "updated_project") return `Updated idea #${a.id}: ${a.name}`;
           if (a.type === "created_goal") return `Added goal #${a.id}: ${a.title}`;
+          if (a.type === "added_tasks") return `Added ${a.taskCount} task(s) to #${a.id} ${a.name}`;
           return "";
         }).filter(Boolean).join("\n");
       }

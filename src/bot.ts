@@ -10,17 +10,17 @@ import { message } from "telegraf/filters";
 import type { Config } from "./config.js";
 import {
   addProject,
+  addProjectTask,
   addDailyLog,
-  getProject,
+  getProjectWithTasks,
   getUserByTelegramChatId,
   linkTelegramByCode,
   unlinkTelegram,
-  setNextAction,
   setStatus,
   stampProgress,
+  updateProjectTask,
   type NewProject,
   type ProjectStatus,
-  type ProjectType,
   type User,
   PROJECT_STATUSES,
 } from "./db.js";
@@ -30,19 +30,12 @@ const SETTABLE_STATUSES: ProjectStatus[] = [...PROJECT_STATUSES];
 
 interface AddDraft {
   kind: "add";
-  step:
-    | "name"
-    | "type"
-    | "revenue"
-    | "confidence"
-    | "time_to_cash"
-    | "effort"
-    | "next_action";
-  data: Partial<NewProject>;
+  step: "name" | "description" | "task";
+  data: Partial<NewProject> & { task?: string };
 }
 
 interface DoneFollowUp {
-  kind: "done_next_action";
+  kind: "done_next_task";
   projectId: number;
 }
 
@@ -51,22 +44,6 @@ interface CheckinSession {
 }
 
 type Session = AddDraft | DoneFollowUp | CheckinSession;
-
-// ---------------------------------------------------------------------------
-// Input parsers for the guided /add flow
-// ---------------------------------------------------------------------------
-
-function parse1to5(text: string): number | null {
-  const n = Number(text.trim());
-  if (!Number.isInteger(n) || n < 1 || n > 5) return null;
-  return n;
-}
-
-function parseHours(text: string): number | null {
-  const n = Number(text.trim());
-  if (!Number.isFinite(n) || n < 0) return null;
-  return Math.round(n);
-}
 
 export interface ConciergeBot {
   bot: Telegraf;
@@ -105,12 +82,12 @@ export function createBot(config: Config): ConciergeBot {
         "",
         "Commands:",
         "/today — today's focus",
-        "/list — active projects + scores",
-        "/add — add a project (guided)",
-        "/next {id} {text} — set next action",
-        "/done {id} — mark next action done",
-        "/progress {id} [note] — log progress (resets the stall clock)",
-        "/status {id} {status} — update status",
+        "/list — your ideas + open tasks",
+        "/add — capture a new idea (guided)",
+        "/next {id} {task} — add a task to an idea",
+        "/done {id} — complete the next open task",
+        "/progress {id} [note] — log progress on an idea",
+        "/status {id} {status} — update idea status",
         "/unlink — disconnect this Telegram from your account",
       ].join("\n")
     );
@@ -172,16 +149,17 @@ export function createBot(config: Config): ConciergeBot {
     const rest = stripCommand(ctx.message.text);
     const { id, remainder } = splitIdAndRest(rest);
     if (id === null || remainder.trim() === "") {
-      await ctx.reply("Usage: /next {id} {the next concrete step}");
+      await ctx.reply("Usage: /next {id} {task to add}");
       return;
     }
-    if (!(await getProject(user.id, id))) {
-      await ctx.reply(`No project with id ${id}.`);
+    const idea = await getProjectWithTasks(user.id, id);
+    if (!idea) {
+      await ctx.reply(`No idea with id ${id}.`);
       return;
     }
-    await setNextAction(user.id, id, remainder.trim());
+    await addProjectTask(user.id, id, remainder.trim());
     await stampProgress(user.id, id);
-    await ctx.reply(`\u2705 Next action for #${id} updated.`);
+    await ctx.reply(`\u2705 Task added to #${id} "${idea.name}".`);
   });
 
   bot.command("status", async (ctx) => {
@@ -194,8 +172,8 @@ export function createBot(config: Config): ConciergeBot {
       await ctx.reply(`Usage: /status {id} {${SETTABLE_STATUSES.join("|")}}`);
       return;
     }
-    if (!(await getProject(user.id, id))) {
-      await ctx.reply(`No project with id ${id}.`);
+    if (!(await getProjectWithTasks(user.id, id))) {
+      await ctx.reply(`No idea with id ${id}.`);
       return;
     }
     await setStatus(user.id, id, status);
@@ -212,21 +190,21 @@ export function createBot(config: Config): ConciergeBot {
       await ctx.reply("Usage: /done {id}");
       return;
     }
-    const project = await getProject(user.id, id);
-    if (!project) {
-      await ctx.reply(`No project with id ${id}.`);
+    const idea = await getProjectWithTasks(user.id, id);
+    if (!idea) {
+      await ctx.reply(`No idea with id ${id}.`);
       return;
     }
-    await stampProgress(user.id, id);
-    sessions.set(chatId, { kind: "done_next_action", projectId: id });
-    await ctx.reply(
-      [
-        `\uD83C\uDF89 Nice — marked "${project.next_action ?? "(no action)"}" done for ${project.name}.`,
-        "",
-        "What's the new next action? Reply with the next step,",
-        `or send /status ${id} shipped | paid | blocked if it's finished/stuck.`,
-      ].join("\n")
-    );
+    const nextTask = idea.tasks.find((t) => !t.done);
+    if (nextTask) {
+      await updateProjectTask(user.id, nextTask.id, { done: true });
+      await ctx.reply(`\uD83C\uDF89 Done: "${nextTask.title}" on ${idea.name}.`);
+    } else {
+      await stampProgress(user.id, id);
+      await ctx.reply(`\u2705 Logged progress on ${idea.name} (no open tasks).`);
+    }
+    sessions.set(chatId, { kind: "done_next_task", projectId: id });
+    await ctx.reply("What's the next task for this idea? Reply with text, or /cancel.");
   });
 
   bot.command("progress", async (ctx) => {
@@ -238,18 +216,18 @@ export function createBot(config: Config): ConciergeBot {
       await ctx.reply("Usage: /progress {id} [optional note]");
       return;
     }
-    const project = await getProject(user.id, id);
-    if (!project) {
-      await ctx.reply(`No project with id ${id}.`);
+    const idea = await getProjectWithTasks(user.id, id);
+    if (!idea) {
+      await ctx.reply(`No idea with id ${id}.`);
       return;
     }
     await stampProgress(user.id, id);
     const note = remainder.trim();
     if (note) {
-      await addDailyLog(user.id, `#${id} ${project.name}: ${note}`);
+      await addDailyLog(user.id, `#${id} ${idea.name}: ${note}`);
     }
     await ctx.reply(
-      `\u2705 Logged progress on #${id} (${project.name}).${note ? " Note saved." : ""}`
+      `\u2705 Logged progress on #${id} (${idea.name}).${note ? " Note saved." : ""}`
     );
   });
 
@@ -276,7 +254,7 @@ export function createBot(config: Config): ConciergeBot {
     if (!user) return;
     const chatId = ctx.chat!.id.toString();
     sessions.set(chatId, { kind: "add", step: "name", data: {} });
-    await ctx.reply("Adding a project. What's its name? (or /cancel)");
+    await ctx.reply("New idea — what's it called? (or /cancel)");
   });
 
   bot.command("cancel", async (ctx) => {
@@ -308,11 +286,11 @@ export function createBot(config: Config): ConciergeBot {
       return;
     }
 
-    if (session.kind === "done_next_action") {
-      await setNextAction(user.id, session.projectId, text.trim());
+    if (session.kind === "done_next_task") {
+      await addProjectTask(user.id, session.projectId, text.trim());
       await stampProgress(user.id, session.projectId);
       sessions.delete(chatId);
-      await ctx.reply(`\u2705 New next action set for #${session.projectId}.`);
+      await ctx.reply(`\u2705 New task added for idea #${session.projectId}.`);
       return;
     }
 
@@ -365,85 +343,32 @@ async function handleAddStep(
   switch (session.step) {
     case "name":
       d.name = value;
-      session.step = "type";
-      await ctx.reply("Type? Reply 'fast' (client/income) or 'passive'.");
+      session.step = "description";
+      await ctx.reply("Describe the idea in a sentence or two. (or /skip)");
       return;
 
-    case "type": {
-      const t = value.toLowerCase();
-      if (t !== "fast" && t !== "passive") {
-        await ctx.reply("Please reply exactly 'fast' or 'passive'.");
-        return;
+    case "description":
+      if (value.toLowerCase() !== "/skip") {
+        d.notes = value;
       }
-      d.type = t as ProjectType;
-      session.step = "revenue";
-      await ctx.reply("Revenue potential? 1-5 (5 = big money).");
+      session.step = "task";
+      await ctx.reply("Add a first task? Reply with one concrete step, or /skip to finish.");
       return;
-    }
 
-    case "revenue": {
-      const n = parse1to5(value);
-      if (n === null) {
-        await ctx.reply("Please reply with a number 1-5.");
-        return;
+    case "task": {
+      const tasks: string[] = [];
+      if (value.toLowerCase() !== "/skip") {
+        tasks.push(value);
       }
-      d.revenue_potential = n;
-      session.step = "confidence";
-      await ctx.reply("Confidence someone actually pays? 1-5.");
-      return;
-    }
-
-    case "confidence": {
-      const n = parse1to5(value);
-      if (n === null) {
-        await ctx.reply("Please reply with a number 1-5.");
-        return;
-      }
-      d.confidence = n;
-      session.step = "time_to_cash";
-      await ctx.reply("Time to cash? 1-5 (1 = paid within days, 5 = months/never).");
-      return;
-    }
-
-    case "time_to_cash": {
-      const n = parse1to5(value);
-      if (n === null) {
-        await ctx.reply("Please reply with a number 1-5.");
-        return;
-      }
-      d.time_to_cash = n;
-      session.step = "effort";
-      await ctx.reply("Effort remaining in hours? (whole number)");
-      return;
-    }
-
-    case "effort": {
-      const n = parseHours(value);
-      if (n === null) {
-        await ctx.reply("Please reply with a number of hours (e.g. 8).");
-        return;
-      }
-      d.effort_remaining = n;
-      session.step = "next_action";
-      await ctx.reply("What's the single concrete next action?");
-      return;
-    }
-
-    case "next_action": {
-      d.next_action = value;
       const project = await addProject(userId, {
         name: d.name!,
-        type: d.type!,
-        revenue_potential: d.revenue_potential!,
-        confidence: d.confidence!,
-        time_to_cash: d.time_to_cash!,
-        effort_remaining: d.effort_remaining!,
-        next_action: d.next_action,
-        status: "active",
+        notes: d.notes ?? null,
+        status: "idea",
+        tasks: tasks.length ? tasks : undefined,
       });
       sessions.delete(chatId);
       await ctx.reply(
-        `\u2705 Added #${project.id} "${project.name}" (${project.type}, active).`
+        `\u2705 Idea #${project.id} "${project.name}" saved${tasks.length ? " with 1 task" : ""}.`
       );
       return;
     }

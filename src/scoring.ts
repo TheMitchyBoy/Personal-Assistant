@@ -1,38 +1,29 @@
 /**
- * Priority scoring and daily task allocation.
+ * Daily focus allocation for ideas and their tasks.
  *
- * Core business rules live here and are shared by the bot, scheduler, dashboard
- * AI, and one-shot `npm run daily`:
- *
- *   - Projects split into `fast` (income) and `passive` (long-game) queues
- *   - Primary task always comes from the highest-scoring fast project
- *   - Secondary is optional passive work — never replaces missing fast work
- *   - Deadline warnings surface projects due within 3 days
+ * Picks active ideas with open tasks, preferring ideas that have been worked on
+ * recently but still have incomplete tasks.
  */
-import type { Project } from "./db.js";
+import type { Project, ProjectTask, ProjectWithTasks } from "./db.js";
 
-export interface ScoredProject {
+export interface FocusPick {
   project: Project;
-  score: number;
+  task: ProjectTask | null;
 }
 
 export interface DayAllocation {
-  primary: ScoredProject | null;
-  secondary: ScoredProject | null;
-  deadlineWarnings: Project[];
-  noFastWork: boolean;
+  primary: FocusPick | null;
+  secondary: FocusPick | null;
+  openTaskCount: number;
 }
 
-export function score(p: Project): number {
-  // Invert time_to_cash so "paid within days" (1) scores higher than "months" (5).
-  const speed = 6 - p.time_to_cash;
-  return (p.revenue_potential * p.confidence * speed) / Math.max(p.effort_remaining, 1);
+function openTasks(project: ProjectWithTasks): ProjectTask[] {
+  return project.tasks.filter((t) => !t.done);
 }
 
-function scoreAndSort(projects: Project[]): ScoredProject[] {
-  return projects
-    .map((project) => ({ project, score: score(project) }))
-    .sort((a, b) => b.score - a.score);
+function nextOpenTask(project: ProjectWithTasks): ProjectTask | null {
+  const pending = openTasks(project);
+  return pending[0] ?? null;
 }
 
 function daysSince(isoDateTime: string): number | null {
@@ -41,36 +32,35 @@ function daysSince(isoDateTime: string): number | null {
   return Math.floor((Date.now() - past.getTime()) / 86_400_000);
 }
 
-function daysUntil(isoDate: string): number | null {
-  const target = new Date(isoDate);
-  if (Number.isNaN(target.getTime())) return null;
-  const today = new Date();
-  const t = Date.UTC(target.getFullYear(), target.getMonth(), target.getDate());
-  const n = Date.UTC(today.getFullYear(), today.getMonth(), today.getDate());
-  return Math.round((t - n) / 86_400_000);
+function rankIdeas(projects: ProjectWithTasks[]): ProjectWithTasks[] {
+  const active = projects.filter((p) => p.status === "active" || p.status === "idea");
+  return active
+    .filter((p) => openTasks(p).length > 0)
+    .sort((a, b) => {
+      const aProgress = a.last_progress_at ? new Date(a.last_progress_at).getTime() : 0;
+      const bProgress = b.last_progress_at ? new Date(b.last_progress_at).getTime() : 0;
+      if (a.status === "active" && b.status !== "active") return -1;
+      if (b.status === "active" && a.status !== "active") return 1;
+      return bProgress - aProgress;
+    });
 }
 
-export function allocateDay(projects: Project[]): DayAllocation {
-  const active = projects.filter((p) => p.status === "active");
+export function allocateDay(projects: ProjectWithTasks[]): DayAllocation {
+  const ranked = rankIdeas(projects);
+  const openTaskCount = projects.reduce((n, p) => n + openTasks(p).length, 0);
 
-  const fast = scoreAndSort(active.filter((p) => p.type === "fast"));
-  const passive = scoreAndSort(active.filter((p) => p.type === "passive"));
-
-  // Surface imminent deadlines regardless of score — sorted soonest first.
-  const deadlineWarnings = active
-    .filter((p) => {
-      if (!p.deadline) return false;
-      const d = daysUntil(p.deadline);
-      return d !== null && d <= 3;
-    })
-    .sort((a, b) => (daysUntil(a.deadline!) ?? 0) - (daysUntil(b.deadline!) ?? 0));
+  const primaryProject = ranked[0] ?? null;
+  const secondaryProject = ranked[1] ?? null;
 
   return {
-    primary: fast[0] ?? null,
-    secondary: passive[0] ?? null,
-    deadlineWarnings,
-    noFastWork: fast.length === 0,
+    primary: primaryProject
+      ? { project: primaryProject, task: nextOpenTask(primaryProject) }
+      : null,
+    secondary: secondaryProject
+      ? { project: secondaryProject, task: nextOpenTask(secondaryProject) }
+      : null,
+    openTaskCount,
   };
 }
 
-export { daysUntil, daysSince };
+export { daysSince };

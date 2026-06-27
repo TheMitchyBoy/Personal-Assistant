@@ -20,33 +20,35 @@ import {
 import {
   addGoal,
   addProject,
+  addProjectTask,
   deleteGoal,
   deleteProject,
+  deleteProjectTask,
   generateLinkCode,
-  getAllProjects,
+  getAllProjectsWithTasks,
   getGoal,
   getGoals,
   getProject,
+  getProjectTask,
+  getProjectWithTasks,
   getUserById,
   setTelegramLinkCode,
   unlinkTelegram,
   updateGoal,
   updateProject,
+  updateProjectTask,
   updateUserSettings,
-  PROJECT_STATUSES,
-  PROJECT_TYPES,
   type NewProject,
   type ProjectPatch,
   type ProjectStatus,
-  type ProjectType,
 } from "./db.js";
-import { chat, isAiConfigured, type ChatMessage } from "./ai.js";
+import { chat, isAiConfigured, suggestTasksForProject, type ChatMessage } from "./ai.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.resolve(__dirname, "..", "public");
 
-const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const TIME_RE = /^([01]?\d|2[0-3]):([0-5]\d)$/;
+const UI_STATUSES: ProjectStatus[] = ["idea", "active", "blocked", "shipped", "archived"];
 
 declare global {
   namespace Express {
@@ -67,55 +69,30 @@ function toInt(v: unknown): number | null {
   return Number.isInteger(n) ? n : null;
 }
 
-function validateDeadline(v: unknown): { value: string | null } | { error: string } {
-  const s = toNullableString(v);
-  if (s === null) return { value: null };
-  if (!DATE_RE.test(s)) return { error: "deadline must be YYYY-MM-DD or empty" };
-  return { value: s };
-}
-
-function validate1to5(v: unknown, field: string): { value: number } | { error: string } {
-  const n = toInt(v);
-  if (n === null || n < 1 || n > 5) return { error: `${field} must be an integer 1-5` };
-  return { value: n };
-}
-
 function validateNewProject(body: Record<string, unknown>): { value: NewProject } | { error: string } {
   const name = toNullableString(body.name);
   if (!name) return { error: "name is required" };
 
-  const type = String(body.type ?? "").trim() as ProjectType;
-  if (!PROJECT_TYPES.includes(type)) return { error: "type must be 'fast' or 'passive'" };
+  const status = String(body.status ?? "idea").trim() as ProjectStatus;
+  if (!UI_STATUSES.includes(status)) {
+    return { error: `status must be one of ${UI_STATUSES.join(", ")}` };
+  }
 
-  const rev = validate1to5(body.revenue_potential, "revenue_potential");
-  if ("error" in rev) return rev;
-  const conf = validate1to5(body.confidence, "confidence");
-  if ("error" in conf) return conf;
-  const ttc = validate1to5(body.time_to_cash, "time_to_cash");
-  if ("error" in ttc) return ttc;
-
-  const effort = toInt(body.effort_remaining);
-  if (effort === null || effort < 0) return { error: "effort_remaining must be a whole number >= 0" };
-
-  const status = String(body.status ?? "active").trim() as ProjectStatus;
-  if (!PROJECT_STATUSES.includes(status)) return { error: `status must be one of ${PROJECT_STATUSES.join(", ")}` };
-
-  const deadline = validateDeadline(body.deadline);
-  if ("error" in deadline) return deadline;
+  const tasksRaw = body.tasks;
+  const tasks: string[] = [];
+  if (Array.isArray(tasksRaw)) {
+    for (const t of tasksRaw) {
+      const s = typeof t === "string" ? t.trim() : "";
+      if (s) tasks.push(s);
+    }
+  }
 
   return {
     value: {
       name,
-      type,
-      client: toNullableString(body.client),
-      revenue_potential: rev.value,
-      confidence: conf.value,
-      time_to_cash: ttc.value,
-      effort_remaining: effort,
+      notes: toNullableString(body.notes ?? body.description),
       status,
-      next_action: toNullableString(body.next_action),
-      deadline: deadline.value,
-      notes: toNullableString(body.notes),
+      tasks: tasks.length ? tasks : undefined,
     },
   };
 }
@@ -128,36 +105,16 @@ function validateProjectPatch(body: Record<string, unknown>): { value: ProjectPa
     if (!name) return { error: "name cannot be empty" };
     patch.name = name;
   }
-  if ("type" in body) {
-    const type = String(body.type ?? "").trim() as ProjectType;
-    if (!PROJECT_TYPES.includes(type)) return { error: "type must be 'fast' or 'passive'" };
-    patch.type = type;
+  if ("notes" in body || "description" in body) {
+    patch.notes = toNullableString(body.notes ?? body.description);
   }
   if ("status" in body) {
     const status = String(body.status ?? "").trim() as ProjectStatus;
-    if (!PROJECT_STATUSES.includes(status)) return { error: `status must be one of ${PROJECT_STATUSES.join(", ")}` };
+    if (!UI_STATUSES.includes(status)) {
+      return { error: `status must be one of ${UI_STATUSES.join(", ")}` };
+    }
     patch.status = status;
   }
-  for (const field of ["revenue_potential", "confidence", "time_to_cash"] as const) {
-    if (field in body) {
-      const r = validate1to5(body[field], field);
-      if ("error" in r) return r;
-      patch[field] = r.value;
-    }
-  }
-  if ("effort_remaining" in body) {
-    const effort = toInt(body.effort_remaining);
-    if (effort === null || effort < 0) return { error: "effort_remaining must be a whole number >= 0" };
-    patch.effort_remaining = effort;
-  }
-  if ("deadline" in body) {
-    const d = validateDeadline(body.deadline);
-    if ("error" in d) return d;
-    patch.deadline = d.value;
-  }
-  if ("client" in body) patch.client = toNullableString(body.client);
-  if ("next_action" in body) patch.next_action = toNullableString(body.next_action);
-  if ("notes" in body) patch.notes = toNullableString(body.notes);
 
   return { value: patch };
 }
@@ -282,14 +239,14 @@ export function createServer(config: Config): express.Express {
   const api = express.Router();
   api.use(requireAuth);
 
-  // --- Projects ---
+  // --- Projects (ideas) ---
   api.get("/projects", async (req, res) => {
-    res.json(await getAllProjects(req.userId!));
+    res.json(await getAllProjectsWithTasks(req.userId!));
   });
 
   api.get("/projects/:id", async (req, res) => {
     const id = parseId(req);
-    const project = id !== null ? await getProject(req.userId!, id) : undefined;
+    const project = id !== null ? await getProjectWithTasks(req.userId!, id) : undefined;
     if (!project) return res.status(404).json({ error: "Not found" });
     res.json(project);
   });
@@ -297,7 +254,9 @@ export function createServer(config: Config): express.Express {
   api.post("/projects", async (req, res) => {
     const result = validateNewProject(req.body ?? {});
     if ("error" in result) return res.status(400).json({ error: result.error });
-    res.status(201).json(await addProject(req.userId!, result.value));
+    const project = await addProject(req.userId!, result.value);
+    const withTasks = await getProjectWithTasks(req.userId!, project.id);
+    res.status(201).json(withTasks);
   });
 
   api.patch("/projects/:id", async (req, res) => {
@@ -307,7 +266,8 @@ export function createServer(config: Config): express.Express {
     }
     const result = validateProjectPatch(req.body ?? {});
     if ("error" in result) return res.status(400).json({ error: result.error });
-    res.json(await updateProject(req.userId!, id, result.value));
+    await updateProject(req.userId!, id, result.value);
+    res.json(await getProjectWithTasks(req.userId!, id));
   });
 
   api.delete("/projects/:id", async (req, res) => {
@@ -316,6 +276,68 @@ export function createServer(config: Config): express.Express {
       return res.status(404).json({ error: "Not found" });
     }
     res.json({ ok: true });
+  });
+
+  api.post("/projects/:id/tasks", async (req, res) => {
+    const id = parseId(req);
+    if (id === null || !(await getProject(req.userId!, id))) {
+      return res.status(404).json({ error: "Not found" });
+    }
+    const title = toNullableString((req.body ?? {}).title);
+    if (!title) return res.status(400).json({ error: "title is required" });
+    const task = await addProjectTask(req.userId!, id, title);
+    res.status(201).json(task);
+  });
+
+  api.patch("/tasks/:id", async (req, res) => {
+    const id = parseId(req);
+    if (id === null || !(await getProjectTask(req.userId!, id))) {
+      return res.status(404).json({ error: "Not found" });
+    }
+    const body = req.body ?? {};
+    const patch: { title?: string; done?: boolean } = {};
+    if ("title" in body) {
+      const title = toNullableString(body.title);
+      if (!title) return res.status(400).json({ error: "title cannot be empty" });
+      patch.title = title;
+    }
+    if ("done" in body) patch.done = Boolean(body.done);
+    res.json(await updateProjectTask(req.userId!, id, patch));
+  });
+
+  api.delete("/tasks/:id", async (req, res) => {
+    const id = parseId(req);
+    if (id === null || !(await deleteProjectTask(req.userId!, id))) {
+      return res.status(404).json({ error: "Not found" });
+    }
+    res.json({ ok: true });
+  });
+
+  api.post("/projects/:id/suggest-tasks", async (req, res) => {
+    if (!isAiConfigured(config)) {
+      return res.status(501).json({
+        error: "AI not configured. Set ANTHROPIC_API_KEY to enable task suggestions.",
+      });
+    }
+    const id = parseId(req);
+    if (id === null || !(await getProject(req.userId!, id))) {
+      return res.status(404).json({ error: "Not found" });
+    }
+    try {
+      const suggestions = await suggestTasksForProject(config, req.userId!, id);
+      const add = Boolean((req.body ?? {}).add);
+      if (add) {
+        const added = [];
+        for (const title of suggestions) {
+          added.push(await addProjectTask(req.userId!, id, title));
+        }
+        return res.json({ suggestions, added, project: await getProjectWithTasks(req.userId!, id) });
+      }
+      res.json({ suggestions });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      res.status(502).json({ error: msg });
+    }
   });
 
   // --- Goals ---

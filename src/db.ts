@@ -66,6 +66,22 @@ export interface Project {
   updated_at: string;
 }
 
+/** A concrete task attached to an idea (project). */
+export interface ProjectTask {
+  id: number;
+  user_id: number;
+  project_id: number;
+  title: string;
+  done: boolean;
+  sort_order: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ProjectWithTasks extends Project {
+  tasks: ProjectTask[];
+}
+
 export interface DailyLogEntry {
   id: number;
   user_id: number;
@@ -102,16 +118,11 @@ export type ProjectPatch = Partial<Pick<Project, ProjectEditableColumn>>;
 
 export interface NewProject {
   name: string;
-  type: ProjectType;
-  client?: string | null;
-  revenue_potential: number;
-  confidence: number;
-  time_to_cash: number;
-  effort_remaining: number;
-  status?: ProjectStatus;
-  next_action?: string | null;
-  deadline?: string | null;
+  /** Idea description — what you're exploring or building toward. */
   notes?: string | null;
+  status?: ProjectStatus;
+  /** Optional initial tasks to seed with the idea. */
+  tasks?: string[];
 }
 
 export interface NewUser {
@@ -144,12 +155,6 @@ function nowIso(): string {
 
 function todayIso(): string {
   return nowIso().slice(0, 10);
-}
-
-function isoDateInDays(days: number): string {
-  const d = new Date();
-  d.setDate(d.getDate() + days);
-  return d.toISOString().slice(0, 10);
 }
 
 const SCHEMA = `
@@ -225,6 +230,20 @@ CREATE INDEX IF NOT EXISTS idx_goals_user_id ON goals(user_id);
 CREATE INDEX IF NOT EXISTS idx_daily_log_user_id ON daily_log(user_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_token ON sessions(token);
 CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id);
+
+CREATE TABLE IF NOT EXISTS project_tasks (
+  id SERIAL PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  title TEXT NOT NULL,
+  done BOOLEAN NOT NULL DEFAULT false,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_project_tasks_project_id ON project_tasks(project_id);
+CREATE INDEX IF NOT EXISTS idx_project_tasks_user_id ON project_tasks(user_id);
 `;
 
 function getPool(): pg.Pool {
@@ -491,22 +510,29 @@ export async function addProject(userId: number, p: NewProject): Promise<Project
     [
       userId,
       p.name,
-      p.type,
-      p.client ?? null,
-      p.revenue_potential,
-      p.confidence,
-      p.time_to_cash,
-      p.effort_remaining,
-      p.status ?? "active",
-      p.next_action ?? null,
-      p.deadline ?? null,
+      "fast",
+      null,
+      3,
+      3,
+      3,
+      8,
+      p.status ?? "idea",
+      null,
+      null,
       p.notes ?? null,
       ts,
       ts,
       ts,
     ]
   );
-  return result.rows[0];
+  const project = result.rows[0];
+  if (p.tasks?.length) {
+    for (let i = 0; i < p.tasks.length; i++) {
+      const title = p.tasks[i]?.trim();
+      if (title) await addProjectTask(userId, project.id, title, i);
+    }
+  }
+  return project;
 }
 
 export async function setNextAction(
@@ -605,6 +631,155 @@ export async function deleteProject(userId: number, id: number): Promise<boolean
   return (result.rowCount ?? 0) > 0;
 }
 
+// --- Project tasks ---
+
+export async function getTasksForProject(
+  userId: number,
+  projectId: number
+): Promise<ProjectTask[]> {
+  const result = await getPool().query<ProjectTask>(
+    `SELECT * FROM project_tasks
+     WHERE user_id = $1 AND project_id = $2
+     ORDER BY done ASC, sort_order ASC, id ASC`,
+    [userId, projectId]
+  );
+  return result.rows;
+}
+
+export async function getTasksForProjects(
+  userId: number,
+  projectIds: number[]
+): Promise<ProjectTask[]> {
+  if (projectIds.length === 0) return [];
+  const result = await getPool().query<ProjectTask>(
+    `SELECT * FROM project_tasks
+     WHERE user_id = $1 AND project_id = ANY($2::int[])
+     ORDER BY project_id, done ASC, sort_order ASC, id ASC`,
+    [userId, projectIds]
+  );
+  return result.rows;
+}
+
+export async function attachTasksToProjects(
+  projects: Project[],
+  tasks: ProjectTask[]
+): Promise<ProjectWithTasks[]> {
+  const byProject = new Map<number, ProjectTask[]>();
+  for (const t of tasks) {
+    const list = byProject.get(t.project_id) ?? [];
+    list.push(t);
+    byProject.set(t.project_id, list);
+  }
+  return projects.map((p) => ({ ...p, tasks: byProject.get(p.id) ?? [] }));
+}
+
+export async function getAllProjectsWithTasks(userId: number): Promise<ProjectWithTasks[]> {
+  const projects = await getAllProjects(userId);
+  const tasks = await getTasksForProjects(
+    userId,
+    projects.map((p) => p.id)
+  );
+  return attachTasksToProjects(projects, tasks);
+}
+
+export async function getProjectWithTasks(
+  userId: number,
+  id: number
+): Promise<ProjectWithTasks | undefined> {
+  const project = await getProject(userId, id);
+  if (!project) return undefined;
+  const tasks = await getTasksForProject(userId, id);
+  return { ...project, tasks };
+}
+
+export async function addProjectTask(
+  userId: number,
+  projectId: number,
+  title: string,
+  sortOrder?: number
+): Promise<ProjectTask> {
+  let order = sortOrder;
+  if (order === undefined) {
+    const count = await getPool().query<{ n: string }>(
+      "SELECT COUNT(*)::text AS n FROM project_tasks WHERE user_id = $1 AND project_id = $2",
+      [userId, projectId]
+    );
+    order = Number(count.rows[0]?.n ?? 0);
+  }
+
+  const result = await getPool().query<ProjectTask>(
+    `INSERT INTO project_tasks (user_id, project_id, title, sort_order)
+     VALUES ($1, $2, $3, $4)
+     RETURNING *`,
+    [userId, projectId, title.trim(), order]
+  );
+  await getPool().query("UPDATE projects SET updated_at = NOW() WHERE user_id = $1 AND id = $2", [
+    userId,
+    projectId,
+  ]);
+  return result.rows[0];
+}
+
+export async function updateProjectTask(
+  userId: number,
+  taskId: number,
+  patch: { title?: string; done?: boolean }
+): Promise<ProjectTask | undefined> {
+  const sets: string[] = [];
+  const params: unknown[] = [];
+  let i = 1;
+
+  if (patch.title !== undefined) {
+    sets.push(`title = $${i++}`);
+    params.push(patch.title.trim());
+  }
+  if (patch.done !== undefined) {
+    sets.push(`done = $${i++}`);
+    params.push(patch.done);
+  }
+  if (sets.length === 0) {
+    const result = await getPool().query<ProjectTask>(
+      "SELECT * FROM project_tasks WHERE user_id = $1 AND id = $2",
+      [userId, taskId]
+    );
+    return result.rows[0];
+  }
+
+  sets.push("updated_at = NOW()");
+  params.push(userId, taskId);
+
+  const result = await getPool().query<ProjectTask>(
+    `UPDATE project_tasks SET ${sets.join(", ")}
+     WHERE user_id = $${i} AND id = $${i + 1}
+     RETURNING *`,
+    params
+  );
+  const task = result.rows[0];
+  if (task && patch.done === true) {
+    await stampProgress(userId, task.project_id);
+  }
+  return task;
+}
+
+export async function deleteProjectTask(userId: number, taskId: number): Promise<boolean> {
+  const result = await getPool().query(
+    "DELETE FROM project_tasks WHERE user_id = $1 AND id = $2",
+    [userId, taskId]
+  );
+  return (result.rowCount ?? 0) > 0;
+}
+
+export async function getProjectTask(
+  userId: number,
+  taskId: number
+): Promise<ProjectTask | undefined> {
+  const result = await getPool().query<ProjectTask>(
+    "SELECT * FROM project_tasks WHERE user_id = $1 AND id = $2",
+    [userId, taskId]
+  );
+  return result.rows[0];
+}
+
 // --- Goals ---
 
 export async function getGoals(userId: number): Promise<Goal[]> {
@@ -676,71 +851,42 @@ export async function deleteGoal(userId: number, id: number): Promise<boolean> {
 
 async function seedUserDemoData(userId: number): Promise<void> {
   const ts = nowIso();
-  const seeds: NewProject[] = [
+  const seeds: { idea: NewProject; tasks: string[] }[] = [
     {
-      name: "Joe's Pizza website",
-      type: "fast",
-      client: "Joe's Pizza",
-      revenue_potential: 3,
-      confidence: 5,
-      time_to_cash: 1,
-      effort_remaining: 6,
-      status: "active",
-      next_action: "Send the final invoice and deploy the menu page",
-      deadline: isoDateInDays(2),
-      notes: "Almost done — just the menu page and payment link left.",
+      idea: {
+        name: "Local business website service",
+        notes: "Build simple sites for restaurants and shops in my area. Start with one pilot client.",
+        status: "active",
+      },
+      tasks: [
+        "List 10 businesses nearby with bad websites",
+        "Draft a one-page service offer",
+        "Reach out to 3 owners this week",
+      ],
     },
     {
-      name: "Dental clinic booking tool",
-      type: "fast",
-      client: "BrightSmile Dental",
-      revenue_potential: 5,
-      confidence: 3,
-      time_to_cash: 3,
-      effort_remaining: 20,
-      status: "active",
-      next_action: "Scope the booking flow and send a fixed-price quote",
-      deadline: null,
-      notes: "Bigger contract, still needs a signed quote.",
+      idea: {
+        name: "Dev tools newsletter",
+        notes: "Weekly roundup of useful libraries and patterns for working developers.",
+        status: "idea",
+      },
+      tasks: ["Pick a name and domain", "Outline the first 3 issues", "Set up a simple landing page"],
     },
     {
-      name: "Niche affiliate blog",
-      type: "passive",
-      client: null,
-      revenue_potential: 4,
-      confidence: 2,
-      time_to_cash: 5,
-      effort_remaining: 40,
-      status: "active",
-      next_action: "Write one 1500-word review post targeting a buyer keyword",
-      deadline: null,
-      notes: "Compounds slowly. Only touch with leftover time.",
+      idea: {
+        name: "Automation scripts marketplace",
+        notes: "Sell small Python/Node scripts that solve repetitive business tasks.",
+        status: "idea",
+      },
+      tasks: ["Research what people already pay for on Gumroad", "List 5 script ideas I could ship fast"],
     },
   ];
 
-  for (const row of seeds) {
+  for (const { idea, tasks } of seeds) {
+    const project = await addProject(userId, { ...idea, tasks });
     await getPool().query(
-      `INSERT INTO projects
-        (user_id, name, type, client, revenue_potential, confidence, time_to_cash,
-         effort_remaining, status, next_action, deadline, notes, last_progress_at, created_at, updated_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
-      [
-        userId,
-        row.name,
-        row.type,
-        row.client ?? null,
-        row.revenue_potential,
-        row.confidence,
-        row.time_to_cash,
-        row.effort_remaining,
-        row.status ?? "active",
-        row.next_action ?? null,
-        row.deadline ?? null,
-        row.notes ?? null,
-        ts,
-        ts,
-        ts,
-      ]
+      "UPDATE projects SET last_progress_at = $1, updated_at = $1 WHERE id = $2",
+      [ts, project.id]
     );
   }
 
@@ -748,8 +894,8 @@ async function seedUserDemoData(userId: number): Promise<void> {
     "INSERT INTO goals (user_id, title, detail) VALUES ($1, $2, $3)",
     [
       userId,
-      "Go full-time as a dev as fast as possible",
-      "Combine fast client income with passive products. Prioritize cash now; let passive compound.",
+      "Ship one paid thing this quarter",
+      "Turn rough ideas into concrete tasks and finish something people will pay for.",
     ]
   );
 }
