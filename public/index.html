@@ -1346,16 +1346,16 @@
       <div class="auth-layout">
         <div class="auth-hero">
           <div class="brand-icon"><svg><use href="#icon-brand"/></svg></div>
-          <h1>Capture ideas. Ship tasks.</h1>
-          <p class="hero-lead">Concierge helps you jot down rough ideas, break them into tasks, and get AI suggestions for what to do next.</p>
+          <h1>Prioritize the work that gets paid.</h1>
+          <p class="hero-lead">Concierge helps you score fast and passive projects, sharpen the next action, and keep income work ahead of everything else.</p>
           <div class="feature-list">
             <div class="feature-item">
               <div class="feature-icon"><svg><use href="#icon-zap"/></svg></div>
-              <div><strong>Ideas + tasks</strong><span>Each idea holds a description and a checklist of concrete next steps.</span></div>
+              <div><strong>Fast vs passive</strong><span>Score client work and long-game projects separately so passive work never steals the day.</span></div>
             </div>
             <div class="feature-item">
               <div class="feature-icon"><svg><use href="#icon-bot"/></svg></div>
-              <div><strong>AI task suggestions</strong><span>Ask the assistant to propose tasks that move your ideas forward.</span></div>
+              <div><strong>AI analyst</strong><span>Ask the assistant to sharpen next actions and, only when you allow it, save changes for you.</span></div>
             </div>
             <div class="feature-item">
               <div class="feature-icon"><svg><use href="#icon-clock"/></svg></div>
@@ -1561,6 +1561,10 @@
                 <div id="chat-log" class="chat-log"></div>
                 <div class="chat-input-bar">
                   <textarea id="chat-text" placeholder="Ask about priorities, next actions, or say 'add this project'…"></textarea>
+                  <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text-2);margin:0 0 8px 2px">
+                    <input id="chat-allow-write" type="checkbox" />
+                    Allow the assistant to save changes for this message
+                  </label>
                   <button class="primary" id="chat-send" onclick="sendChat()">
                     <svg><use href="#icon-send"/></svg>
                     Send
@@ -1623,12 +1627,14 @@
     <script>
       const TOKEN_KEY = "concierge_token";
       let token = localStorage.getItem(TOKEN_KEY) || localStorage.getItem("manoverboard_token") || "";
+      localStorage.removeItem(TOKEN_KEY);
+      localStorage.removeItem("manoverboard_token");
       let currentUser = null;
 
       const PAGE_TITLES = {
-        manage: { title: "Workspace", subtitle: "Capture ideas, manage tasks, and let AI suggest what to do next." },
+        manage: { title: "Workspace", subtitle: "Score projects, sharpen next actions, and keep fast income work ahead of passive bets." },
         notes: { title: "Call notes", subtitle: "Capture notes during phone calls and meetings — fast and distraction-free." },
-        assistant: { title: "Assistant", subtitle: "Get task suggestions and help breaking ideas into actionable steps." },
+        assistant: { title: "Assistant", subtitle: "Review priorities, sharpen next actions, and optionally let AI save approved changes." },
         settings: { title: "Settings", subtitle: "Account, schedule, and Telegram integration." },
       };
 
@@ -1718,11 +1724,31 @@
         { value: "active", label: "active" },
         { value: "blocked", label: "on hold" },
         { value: "shipped", label: "done" },
+        { value: "paid", label: "paid" },
         { value: "archived", label: "archived" },
+      ];
+
+      const TYPES = [
+        { value: "fast", label: "fast" },
+        { value: "passive", label: "passive" },
       ];
 
       function statusOpts(selected) {
         return STATUSES.map((s) => `<option value="${s.value}" ${s.value === selected ? "selected" : ""}>${s.label}</option>`).join("");
+      }
+
+      function typeOpts(selected) {
+        return TYPES.map((t) => `<option value="${t.value}" ${t.value === selected ? "selected" : ""}>${t.label}</option>`).join("");
+      }
+
+      function scoreProject(project) {
+        const speed = Math.max(6 - Number(project.time_to_cash || 3), 1);
+        return (Number(project.revenue_potential || 3) * Number(project.confidence || 3) * speed) / Math.max(Number(project.effort_remaining || 8), 1);
+      }
+
+      function projectAction(project) {
+        const task = (project.tasks || []).find((t) => !t.done);
+        return task?.title || project.next_action || "";
       }
 
       function countTasks(projects) {
@@ -1739,7 +1765,7 @@
 
       function updateFocusBanner(projects) {
         const banner = $("focus-banner");
-        const active = projects.filter((p) => p.status === "active" || p.status === "idea");
+        const active = projects.filter((p) => p.status === "active");
         const { open, done } = countTasks(projects);
 
         $("stat-total").textContent = projects.length;
@@ -1748,31 +1774,31 @@
         $("stat-done-tasks").textContent = done;
 
         const ranked = active
-          .filter((p) => (p.tasks || []).some((t) => !t.done))
+          .filter((p) => p.type === "fast" && projectAction(p))
           .sort((a, b) => {
-            if (a.status === "active" && b.status !== "active") return -1;
-            if (b.status === "active" && a.status !== "active") return 1;
-            return 0;
+            return scoreProject(b) - scoreProject(a);
           });
+
+        const passive = active
+          .filter((p) => p.type === "passive" && projectAction(p))
+          .sort((a, b) => scoreProject(b) - scoreProject(a));
 
         banner.classList.remove("hidden", "empty");
 
         if (ranked.length > 0) {
           const top = ranked[0];
-          const task = (top.tasks || []).find((t) => !t.done);
           banner.classList.remove("empty");
           $("focus-title").textContent = top.name;
-          $("focus-action").innerHTML = task
-            ? `<strong>Next task:</strong> ${esc(task.title)}`
-            : "Add a task to sharpen your focus.";
+          const passiveName = passive[0] ? ` Passive spare-time pick: ${passive[0].name}.` : "";
+          $("focus-action").innerHTML = `<strong>Primary fast action:</strong> ${esc(projectAction(top))} <span class="muted">Score ${scoreProject(top).toFixed(1)}.</span>${passiveName ? `<br /><span class="muted">${esc(passiveName)}</span>` : ""}`;
         } else if (projects.length === 0) {
           banner.classList.add("empty");
-          $("focus-title").textContent = "Start with an idea";
-          $("focus-action").textContent = "Capture something you're exploring — then add tasks or ask AI for suggestions.";
+          $("focus-title").textContent = "Start with a fast project";
+          $("focus-action").textContent = "Capture a client or revenue project first, then add a passive bet if you still have room.";
         } else {
           banner.classList.add("empty");
-          $("focus-title").textContent = "No open tasks";
-          $("focus-action").textContent = "Add tasks to your ideas, or use Suggest tasks to get AI recommendations.";
+          $("focus-title").textContent = "No fast project is ready";
+          $("focus-action").textContent = "Set one concrete next action on an active fast project before working passive ideas.";
         }
       }
 
@@ -1795,8 +1821,10 @@
       function projectCard(p) {
         const isNew = !p.id;
         const status = p.status || "idea";
+        const type = p.type || "fast";
         const tasks = p.tasks || [];
         const openCount = tasks.filter((t) => !t.done).length;
+        const score = scoreProject(p).toFixed(1);
         return `
         <div class="idea-card" data-id="${p.id || ""}">
           <div class="idea-card-head">
@@ -1804,20 +1832,45 @@
               <h3>${isNew ? "New idea" : esc(p.name) || "Untitled"}</h3>
               <div class="idea-meta">
                 ${p.id ? `<span class="pill">#${p.id}</span>` : ""}
+                <span class="pill">${esc(type)}</span>
+                <span class="pill">score ${score}</span>
                 <span class="pill">${openCount} open</span>
               </div>
             </div>
             ${!isNew ? `<select data-k="status" style="width:auto;min-width:110px" onchange="markDirty(this)">${statusOpts(status)}</select>` : ""}
           </div>
+          <div class="row">
+            <div class="field">
+              <label>Type</label>
+              <select data-k="type" onchange="markDirty(this)">${typeOpts(type)}</select>
+            </div>
+            <div class="field">
+              <label>Client</label>
+              <input data-k="client" value="${esc(p.client)}" placeholder="Client name (optional)" oninput="markDirty(this)" />
+            </div>
+          </div>
           <div class="field" style="margin-bottom:0">
             <label>Title</label>
-            <input data-k="name" value="${esc(p.name)}" placeholder="What's the idea?" oninput="markDirty(this)" />
+            <input data-k="name" value="${esc(p.name)}" placeholder="What project are you moving?" oninput="markDirty(this)" />
           </div>
           <div class="field">
             <label>Description</label>
-            <textarea data-k="notes" placeholder="What are you exploring? Why does it matter?" oninput="markDirty(this)">${esc(p.notes)}</textarea>
+            <textarea data-k="notes" placeholder="What is it, who is it for, and why does it matter?" oninput="markDirty(this)">${esc(p.notes)}</textarea>
           </div>
           ${isNew ? `<div class="field"><label>Status</label><select data-k="status">${statusOpts(status)}</select></div>` : ""}
+          <div class="row-3">
+            <div class="field"><label>Revenue 1-5</label><input data-k="revenue_potential" type="number" min="1" max="5" value="${esc(p.revenue_potential ?? 3)}" oninput="markDirty(this)" /></div>
+            <div class="field"><label>Confidence 1-5</label><input data-k="confidence" type="number" min="1" max="5" value="${esc(p.confidence ?? 3)}" oninput="markDirty(this)" /></div>
+            <div class="field"><label>Time to cash 1-5</label><input data-k="time_to_cash" type="number" min="1" max="5" value="${esc(p.time_to_cash ?? 3)}" oninput="markDirty(this)" /></div>
+          </div>
+          <div class="row">
+            <div class="field"><label>Effort remaining (hrs)</label><input data-k="effort_remaining" type="number" min="1" value="${esc(p.effort_remaining ?? 8)}" oninput="markDirty(this)" /></div>
+            <div class="field"><label>Deadline</label><input data-k="deadline" type="date" value="${esc(p.deadline)}" onchange="markDirty(this)" /></div>
+          </div>
+          <div class="field">
+            <label>Next action</label>
+            <input data-k="next_action" value="${esc(p.next_action)}" placeholder="One concrete action that moves this project forward" oninput="markDirty(this)" />
+          </div>
           <div class="task-section">
             <div class="task-section-head">
               <label>Tasks</label>
@@ -1860,7 +1913,7 @@
         updateFocusBanner(list);
         updateProjectSelects();
         if (list.length === 0) {
-          $("projects").innerHTML = '<div class="empty-state">No ideas yet — capture something you\'re exploring.</div>';
+          $("projects").innerHTML = '<div class="empty-state">No projects yet — start with the fastest path to cash.</div>';
         } else {
           $("projects").innerHTML = list.map(projectCard).join("");
         }
@@ -2281,6 +2334,7 @@
         $("login").classList.add("hidden");
         $("app").classList.remove("hidden");
         updateSidebarUser(currentUser);
+        token = "";
         Promise.all([loadGoals(), loadProjects(), loadMeetingNotes(), loadSettings()]).catch((e) => toast(e.message, true));
       }
 
@@ -2295,6 +2349,7 @@
         token = "";
         currentUser = null;
         localStorage.removeItem(TOKEN_KEY);
+        localStorage.removeItem("manoverboard_token");
         chatInited = false;
         chatHistory = [];
         switchTab("manage");
@@ -2306,9 +2361,8 @@
         const password = $("login-pw").value;
         try {
           const data = await authApi("POST", "/auth/login", { email, password });
-          token = data.token;
+          token = "";
           currentUser = data.user;
-          localStorage.setItem(TOKEN_KEY, token);
           $("login-err").textContent = "";
           showApp();
         } catch (e) {
@@ -2322,9 +2376,8 @@
         const password = $("signup-pw").value;
         try {
           const data = await authApi("POST", "/auth/signup", { email, password, name: name || null });
-          token = data.token;
+          token = "";
           currentUser = data.user;
-          localStorage.setItem(TOKEN_KEY, token);
           $("login-err").textContent = "";
           showApp();
         } catch (e) {
@@ -2458,11 +2511,11 @@
             return;
           }
           renderChatEmpty(
-            "Ask me to suggest tasks for your ideas, break down a concept, or add a new idea with starter tasks.",
+            "Ask me to rank your projects, sharpen a next action, or draft new work before deciding whether to save it.",
             [
-              "Suggest tasks for my most promising idea.",
-              "I want to start a newsletter — create the idea with tasks.",
-              "Which idea should I work on tonight and what should I do?",
+              "Rank my fast projects and tell me what to do tonight.",
+              "I want to start a newsletter — draft the project and starter tasks.",
+              "Sharpen the next action on my most urgent client project.",
             ]
           );
         } catch (e) {
@@ -2507,6 +2560,7 @@
       async function sendChat() {
         const ta = $("chat-text");
         const text = ta.value.trim();
+        const allowWrite = $("chat-allow-write")?.checked || false;
         if (!text) return;
         ta.value = "";
         appendMsg("user", text);
@@ -2515,12 +2569,13 @@
         $("chat-send").disabled = true;
         const thinking = appendMsg("system", "Thinking…");
         try {
-          const data = await api("POST", "/chat", { messages: chatHistory });
+          const data = await api("POST", "/chat", { messages: chatHistory, allow_write: allowWrite });
           thinking.remove();
           appendMsg("assistant", data.reply);
           chatHistory.push({ role: "assistant", content: data.reply });
           const actionNote = formatActions(data.actions);
           if (actionNote) appendMsg("system", actionNote);
+          if ($("chat-allow-write")) $("chat-allow-write").checked = false;
           if (data.actions?.length) {
             await Promise.all([loadGoals(), loadProjects()]);
           }

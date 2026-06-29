@@ -7,9 +7,10 @@
  */
 import cron, { type ScheduledTask } from "node-cron";
 import {
+  claimUserNudge,
+  completeUserNudge,
   getUsersWithTelegram,
-  markCheckinNudgeSent,
-  markDailyNudgeSent,
+  releaseUserNudgeClaim,
   type User,
 } from "./db.js";
 
@@ -73,11 +74,14 @@ async function runUserNudges(callbacks: UserNudgeCallbacks): Promise<void> {
       timesMatch(user.daily_time, time) &&
       user.last_daily_nudge_date !== date
     ) {
+      const claimed = await claimUserNudge(user.id, "daily", date);
+      if (!claimed) continue;
       try {
         await callbacks.sendDaily(user);
-        await markDailyNudgeSent(user.id, date);
+        await completeUserNudge(user.id, "daily", date);
         console.log(`[scheduler] daily nudge sent to user #${user.id}`);
       } catch (err) {
+        await releaseUserNudgeClaim(user.id, "daily", date);
         console.error(`[scheduler] daily nudge failed for user #${user.id}:`, err);
       }
     }
@@ -86,11 +90,14 @@ async function runUserNudges(callbacks: UserNudgeCallbacks): Promise<void> {
       timesMatch(user.checkin_time, time) &&
       user.last_checkin_nudge_date !== date
     ) {
+      const claimed = await claimUserNudge(user.id, "checkin", date);
+      if (!claimed) continue;
       try {
         await callbacks.sendCheckin(user);
-        await markCheckinNudgeSent(user.id, date);
+        await completeUserNudge(user.id, "checkin", date);
         console.log(`[scheduler] check-in sent to user #${user.id}`);
       } catch (err) {
+        await releaseUserNudgeClaim(user.id, "checkin", date);
         console.error(`[scheduler] check-in failed for user #${user.id}:`, err);
       }
     }

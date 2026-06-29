@@ -254,10 +254,11 @@ state.
 - **Opt-in.** The agent is enabled only when `ANTHROPIC_API_KEY` is set;
   otherwise the Assistant tab shows a "not configured" notice. Model defaults to
   `claude-sonnet-4-6` and is overridable via `ANTHROPIC_MODEL`.
-- **Read-only context.** The agent reasons over your data and gives concrete,
-  time-aware advice (it doesn't edit projects itself — you do that on the Manage
-  tab). Ask things like "what should I focus on tonight?", "rank my fast
-  projects and sharpen each next action", or "which projects are stalling?".
+- **Default read-only, opt-in writes.** The agent reasons over your data and gives
+  concrete, time-aware advice by default. If you explicitly allow writes for a
+  message, it can create or update projects, goals, and tasks on your behalf.
+  Ask things like "what should I focus on tonight?", "rank my fast projects and
+  sharpen each next action", or "draft this new project and save it".
 - Conversation history is kept in the browser session (not persisted
   server-side) and the most recent turns are sent with each request.
 

@@ -1,7 +1,7 @@
 /**
- * Telegram message formatting for ideas and tasks.
+ * Telegram message formatting for scored projects and tasks.
  */
-import { allocateDay, daysSince, type DayAllocation } from "./scoring.js";
+import { allocateDay, daysSince, daysUntil, type DayAllocation } from "./scoring.js";
 import {
   getAllProjectsWithTasks,
   getStalledProjects,
@@ -41,30 +41,39 @@ export async function formatDailyMessage(
   const alloc = allocation ?? allocateDay(all);
   const lines: string[] = ["\u2600\uFE0F Today's focus", ""];
 
-  if (alloc.primary) {
-    const { project, task } = alloc.primary;
-    lines.push(`\uD83D\uDCA1 Idea: ${project.name}`);
-    if (task) {
-      lines.push(`\u2192 ${task.title}`);
-    } else {
-      lines.push(`\u2192 Add a task to this idea, or pick up where you left off.`);
+  if (alloc.deadlineWarnings.length > 0) {
+    lines.push("\u23F0 Heads up:");
+    for (const project of alloc.deadlineWarnings) {
+      const days = daysUntil(project.deadline!);
+      const suffix = days === 0 ? "today" : `in ${days}d`;
+      lines.push(`\u2022 ${project.name} (#${project.id}) — due ${suffix}`);
     }
+    lines.push("");
+  }
+
+  if (alloc.primary) {
+    const { project, action, score } = alloc.primary;
+    lines.push(`\uD83D\uDCB0 PRIMARY (income): ${project.name}`);
+    lines.push(`\u2192 ${action ?? "Add a concrete next action."}`);
+    lines.push(`Why: closest to getting paid (score ${score.toFixed(1)}).`);
   } else if (alloc.openTaskCount === 0) {
-    lines.push("\uD83D\uDCA1 No open tasks on your ideas.");
-    lines.push("Capture a new idea with /add or ask the dashboard AI to suggest tasks.");
+    lines.push("\uD83D\uDCB0 No fast projects have a next action.");
+    lines.push("Capture a client-facing project or set a concrete next action before passive work.");
   } else {
-    lines.push("\uD83D\uDCA1 No active ideas with tasks — review your list and activate one.");
+    lines.push("\uD83D\uDCB0 No active fast projects are ready.");
+    lines.push("Review your fast queue and set one concrete next action.");
   }
 
   if (alloc.secondary) {
-    const { project, task } = alloc.secondary;
+    const { project, action } = alloc.secondary;
     lines.push("");
-    lines.push(`\u2728 If you have spare time: ${project.name}`);
-    lines.push(`\u2192 ${task?.title ?? "(add a task)"}`);
+    lines.push(`\uD83C\uDF31 If you have 30 min spare: ${project.name}`);
+    lines.push(`\u2192 ${action ?? "(add a next action)"}`);
+    lines.push("Only do this after the primary income task.");
   }
 
   lines.push("");
-  lines.push("Reply /done {id} when you finish a task on an idea.");
+  lines.push("Reply /done {id} when you finish something.");
 
   if (stallDays !== null) {
     const stallSection = await buildStallSection(userId, stallDays);
@@ -81,13 +90,14 @@ export async function formatProjectList(userId: number): Promise<string> {
   const all = await getAllProjectsWithTasks(userId);
   const active = all.filter((p) => p.status === "active" || p.status === "idea");
   if (active.length === 0) {
-    return "No ideas yet. Use /add to capture one.";
+    return "No projects yet. Use /add to capture one.";
   }
   return active
     .map((p) => {
       const open = p.tasks.filter((t) => !t.done).length;
       const done = p.tasks.filter((t) => t.done).length;
-      return `#${p.id} ${p.name} [${p.status}] — ${open} open, ${done} done`;
+      const score = ((p.revenue_potential * p.confidence * Math.max(6 - p.time_to_cash, 1)) / Math.max(p.effort_remaining, 1)).toFixed(1);
+      return `#${p.id} ${p.name} [${p.type}/${p.status}] — score ${score}, ${open} open, ${done} done`;
     })
     .join("\n");
 }

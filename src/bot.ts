@@ -30,7 +30,16 @@ const SETTABLE_STATUSES: ProjectStatus[] = [...PROJECT_STATUSES];
 
 interface AddDraft {
   kind: "add";
-  step: "name" | "description" | "task";
+  step:
+    | "name"
+    | "type"
+    | "revenue"
+    | "confidence"
+    | "time_to_cash"
+    | "effort"
+    | "next_action"
+    | "description"
+    | "task";
   data: Partial<NewProject> & { task?: string };
 }
 
@@ -82,12 +91,12 @@ export function createBot(config: Config): ConciergeBot {
         "",
         "Commands:",
         "/today — today's focus",
-        "/list — your ideas + open tasks",
-        "/add — capture a new idea (guided)",
-        "/next {id} {task} — add a task to an idea",
+        "/list — your projects + open tasks",
+        "/add — capture a new project (guided)",
+        "/next {id} {task} — add a task to a project",
         "/done {id} — complete the next open task",
-        "/progress {id} [note] — log progress on an idea",
-        "/status {id} {status} — update idea status",
+        "/progress {id} [note] — log progress on a project",
+        "/status {id} {status} — update project status",
         "/unlink — disconnect this Telegram from your account",
       ].join("\n")
     );
@@ -154,7 +163,7 @@ export function createBot(config: Config): ConciergeBot {
     }
     const idea = await getProjectWithTasks(user.id, id);
     if (!idea) {
-      await ctx.reply(`No idea with id ${id}.`);
+      await ctx.reply(`No project with id ${id}.`);
       return;
     }
     await addProjectTask(user.id, id, remainder.trim());
@@ -173,7 +182,7 @@ export function createBot(config: Config): ConciergeBot {
       return;
     }
     if (!(await getProjectWithTasks(user.id, id))) {
-      await ctx.reply(`No idea with id ${id}.`);
+      await ctx.reply(`No project with id ${id}.`);
       return;
     }
     await setStatus(user.id, id, status);
@@ -192,7 +201,7 @@ export function createBot(config: Config): ConciergeBot {
     }
     const idea = await getProjectWithTasks(user.id, id);
     if (!idea) {
-      await ctx.reply(`No idea with id ${id}.`);
+      await ctx.reply(`No project with id ${id}.`);
       return;
     }
     const nextTask = idea.tasks.find((t) => !t.done);
@@ -204,7 +213,7 @@ export function createBot(config: Config): ConciergeBot {
       await ctx.reply(`\u2705 Logged progress on ${idea.name} (no open tasks).`);
     }
     sessions.set(chatId, { kind: "done_next_task", projectId: id });
-    await ctx.reply("What's the next task for this idea? Reply with text, or /cancel.");
+    await ctx.reply("What's the next task for this project? Reply with text, or /cancel.");
   });
 
   bot.command("progress", async (ctx) => {
@@ -218,7 +227,7 @@ export function createBot(config: Config): ConciergeBot {
     }
     const idea = await getProjectWithTasks(user.id, id);
     if (!idea) {
-      await ctx.reply(`No idea with id ${id}.`);
+      await ctx.reply(`No project with id ${id}.`);
       return;
     }
     await stampProgress(user.id, id);
@@ -244,6 +253,8 @@ export function createBot(config: Config): ConciergeBot {
           ? `No check-in logged tonight.\n\n${stalls}`
           : "No check-in logged tonight. Nothing stalling — nice."
       );
+    } else if (session?.kind === "add") {
+      await handleAddSkip(ctx, session, sessions, chatId, user.id);
     } else {
       await ctx.reply("Nothing to skip.");
     }
@@ -254,7 +265,7 @@ export function createBot(config: Config): ConciergeBot {
     if (!user) return;
     const chatId = ctx.chat!.id.toString();
     sessions.set(chatId, { kind: "add", step: "name", data: {} });
-    await ctx.reply("New idea — what's it called? (or /cancel)");
+    await ctx.reply("New project — what's it called? (or /cancel)");
   });
 
   bot.command("cancel", async (ctx) => {
@@ -343,36 +354,179 @@ async function handleAddStep(
   switch (session.step) {
     case "name":
       d.name = value;
+      session.step = "type";
+      await ctx.reply("Type? Reply `fast` for income work or `passive` for long-game work. (/skip = fast)");
+      return;
+
+    case "type": {
+      const type = value.toLowerCase();
+      if (type !== "fast" && type !== "passive") {
+        await ctx.reply("Reply `fast` or `passive`. (/skip uses `fast`)");
+        return;
+      }
+      d.type = type;
+      session.step = "revenue";
+      await ctx.reply("Revenue potential 1-5? (/skip = 3)");
+      return;
+    }
+
+    case "revenue": {
+      const revenue = parseScale(value);
+      if (revenue === null) {
+        await ctx.reply("Reply with a whole number from 1 to 5. (/skip = 3)");
+        return;
+      }
+      d.revenue_potential = revenue;
+      session.step = "confidence";
+      await ctx.reply("Confidence someone pays 1-5? (/skip = 3)");
+      return;
+    }
+
+    case "confidence": {
+      const confidence = parseScale(value);
+      if (confidence === null) {
+        await ctx.reply("Reply with a whole number from 1 to 5. (/skip = 3)");
+        return;
+      }
+      d.confidence = confidence;
+      session.step = "time_to_cash";
+      await ctx.reply("Time to cash 1-5? (1 = soon, 5 = far away) (/skip = 3)");
+      return;
+    }
+
+    case "time_to_cash": {
+      const timeToCash = parseScale(value);
+      if (timeToCash === null) {
+        await ctx.reply("Reply with a whole number from 1 to 5. (/skip = 3)");
+        return;
+      }
+      d.time_to_cash = timeToCash;
+      session.step = "effort";
+      await ctx.reply("Effort remaining in hours? (/skip = 8)");
+      return;
+    }
+
+    case "effort": {
+      const effort = parseEffort(value);
+      if (effort === null) {
+        await ctx.reply("Reply with a number of hours >= 1. (/skip = 8)");
+        return;
+      }
+      d.effort_remaining = effort;
+      session.step = "next_action";
+      await ctx.reply("What's the single next action? (/skip to leave blank)");
+      return;
+    }
+
+    case "next_action":
+      d.next_action = value;
       session.step = "description";
-      await ctx.reply("Describe the idea in a sentence or two. (or /skip)");
+      await ctx.reply("Describe the project in a sentence or two. (/skip to leave blank)");
       return;
 
     case "description":
-      if (value.toLowerCase() !== "/skip") {
-        d.notes = value;
-      }
+      d.notes = value;
       session.step = "task";
       await ctx.reply("Add a first task? Reply with one concrete step, or /skip to finish.");
       return;
 
     case "task": {
       const tasks: string[] = [];
-      if (value.toLowerCase() !== "/skip") {
-        tasks.push(value);
-      }
-      const project = await addProject(userId, {
-        name: d.name!,
-        notes: d.notes ?? null,
-        status: "idea",
-        tasks: tasks.length ? tasks : undefined,
-      });
-      sessions.delete(chatId);
-      await ctx.reply(
-        `\u2705 Idea #${project.id} "${project.name}" saved${tasks.length ? " with 1 task" : ""}.`
-      );
+      tasks.push(value);
+      await finishAdd(ctx, userId, session, sessions, chatId, tasks);
       return;
     }
   }
+}
+
+async function handleAddSkip(
+  ctx: { reply: (s: string) => Promise<unknown> },
+  session: AddDraft,
+  sessions: Map<string, Session>,
+  chatId: string,
+  userId: number
+): Promise<void> {
+  const d = session.data;
+  switch (session.step) {
+    case "name":
+      await ctx.reply("Project name is required. Reply with a name or /cancel.");
+      return;
+    case "type":
+      d.type = "fast";
+      session.step = "revenue";
+      await ctx.reply("Revenue potential 1-5? (/skip = 3)");
+      return;
+    case "revenue":
+      d.revenue_potential = 3;
+      session.step = "confidence";
+      await ctx.reply("Confidence someone pays 1-5? (/skip = 3)");
+      return;
+    case "confidence":
+      d.confidence = 3;
+      session.step = "time_to_cash";
+      await ctx.reply("Time to cash 1-5? (1 = soon, 5 = far away) (/skip = 3)");
+      return;
+    case "time_to_cash":
+      d.time_to_cash = 3;
+      session.step = "effort";
+      await ctx.reply("Effort remaining in hours? (/skip = 8)");
+      return;
+    case "effort":
+      d.effort_remaining = 8;
+      session.step = "next_action";
+      await ctx.reply("What's the single next action? (/skip to leave blank)");
+      return;
+    case "next_action":
+      d.next_action = null;
+      session.step = "description";
+      await ctx.reply("Describe the project in a sentence or two. (/skip to leave blank)");
+      return;
+    case "description":
+      d.notes = null;
+      session.step = "task";
+      await ctx.reply("Add a first task? Reply with one concrete step, or /skip to finish.");
+      return;
+    case "task":
+      await finishAdd(ctx, userId, session, sessions, chatId, []);
+      return;
+  }
+}
+
+async function finishAdd(
+  ctx: { reply: (s: string) => Promise<unknown> },
+  userId: number,
+  session: AddDraft,
+  sessions: Map<string, Session>,
+  chatId: string,
+  tasks: string[]
+): Promise<void> {
+  const d = session.data;
+  const project = await addProject(userId, {
+    name: d.name!,
+    type: d.type ?? "fast",
+    revenue_potential: d.revenue_potential ?? 3,
+    confidence: d.confidence ?? 3,
+    time_to_cash: d.time_to_cash ?? 3,
+    effort_remaining: d.effort_remaining ?? 8,
+    next_action: d.next_action ?? null,
+    notes: d.notes ?? null,
+    status: "idea",
+    tasks: tasks.length ? tasks : undefined,
+  });
+  sessions.delete(chatId);
+  await ctx.reply(
+    `\u2705 Project #${project.id} "${project.name}" saved${tasks.length ? " with 1 task" : ""}.`
+  );
+}
+
+function parseScale(value: string): number | null {
+  const n = Number(value);
+  return Number.isInteger(n) && n >= 1 && n <= 5 ? n : null;
+}
+
+function parseEffort(value: string): number | null {
+  const n = Number(value);
+  return Number.isFinite(n) && n >= 1 ? Math.round(n) : null;
 }
 
 function stripCommand(text: string): string {

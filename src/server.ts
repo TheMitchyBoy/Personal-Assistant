@@ -8,7 +8,7 @@
 import express, { type Request, type Response, type NextFunction } from "express";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import type { Config } from "./config.js";
+import { isRailway, type Config } from "./config.js";
 import {
   AuthError,
   login,
@@ -44,10 +44,13 @@ import {
   updateProjectTask,
   updateUserSettings,
   MEETING_NOTE_TYPES,
+  PROJECT_TYPES,
+  PROJECT_STATUSES,
   type MeetingNotePatch,
   type MeetingNoteType,
   type NewMeetingNote,
   type NewProject,
+  type ProjectType,
   type ProjectPatch,
   type ProjectStatus,
 } from "./db.js";
@@ -57,7 +60,12 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.resolve(__dirname, "..", "public");
 
 const TIME_RE = /^([01]?\d|2[0-3]):([0-5]\d)$/;
-const UI_STATUSES: ProjectStatus[] = ["idea", "active", "blocked", "shipped", "archived"];
+const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+const UI_STATUSES: ProjectStatus[] = [...PROJECT_STATUSES];
+const RATE_WINDOW_MS = 60_000;
+const SESSION_COOKIE = "concierge_session";
+
+const rateBuckets = new Map<string, { count: number; resetAt: number }>();
 
 declare global {
   namespace Express {
@@ -78,14 +86,116 @@ function toInt(v: unknown): number | null {
   return Number.isInteger(n) ? n : null;
 }
 
+function toProjectType(v: unknown): ProjectType | null {
+  const value = String(v ?? "").trim() as ProjectType;
+  return PROJECT_TYPES.includes(value) ? value : null;
+}
+
+function toScoreInt(field: string, v: unknown): { value: number } | { error: string } {
+  const n = toInt(v);
+  if (n === null || n < 1 || n > 5) {
+    return { error: `${field} must be an integer from 1 to 5` };
+  }
+  return { value: n };
+}
+
+function toPositiveInt(field: string, v: unknown): { value: number } | { error: string } {
+  const n = Number(v);
+  if (!Number.isFinite(n) || n < 1) {
+    return { error: `${field} must be a number >= 1` };
+  }
+  return { value: Math.round(n) };
+}
+
+function toIsoDate(field: string, v: unknown): { value: string | null } | { error: string } {
+  const value = toNullableString(v);
+  if (!value) return { value: null };
+  if (!ISO_DATE_RE.test(value) || Number.isNaN(Date.parse(`${value}T00:00:00.000Z`))) {
+    return { error: `${field} must be YYYY-MM-DD` };
+  }
+  return { value };
+}
+
+function parseCookie(req: Request, name: string): string | null {
+  const header = req.header("cookie");
+  if (!header) return null;
+  const cookies = header.split(";");
+  for (const cookie of cookies) {
+    const [rawName, ...rest] = cookie.trim().split("=");
+    if (rawName === name) {
+      return decodeURIComponent(rest.join("="));
+    }
+  }
+  return null;
+}
+
+function setSessionCookie(res: Response, token: string): void {
+  const secure = isRailway() || process.env.NODE_ENV === "production";
+  const parts = [
+    `${SESSION_COOKIE}=${encodeURIComponent(token)}`,
+    "Path=/",
+    "HttpOnly",
+    "SameSite=Lax",
+    `Max-Age=${60 * 60 * 24 * 30}`,
+  ];
+  if (secure) parts.push("Secure");
+  res.setHeader("Set-Cookie", parts.join("; "));
+}
+
+function clearSessionCookie(res: Response): void {
+  const secure = isRailway() || process.env.NODE_ENV === "production";
+  const parts = [
+    `${SESSION_COOKIE}=`,
+    "Path=/",
+    "HttpOnly",
+    "SameSite=Lax",
+    "Max-Age=0",
+  ];
+  if (secure) parts.push("Secure");
+  res.setHeader("Set-Cookie", parts.join("; "));
+}
+
+function rateLimit(max: number, windowMs: number, keyFn: (req: Request) => string) {
+  return (req: Request, res: Response, next: NextFunction): void => {
+    const now = Date.now();
+    const key = keyFn(req);
+    const current = rateBuckets.get(key);
+    if (!current || current.resetAt <= now) {
+      rateBuckets.set(key, { count: 1, resetAt: now + windowMs });
+      next();
+      return;
+    }
+    if (current.count >= max) {
+      res.status(429).json({ error: "Too many requests. Try again in a minute." });
+      return;
+    }
+    current.count += 1;
+    next();
+  };
+}
+
 function validateNewProject(body: Record<string, unknown>): { value: NewProject } | { error: string } {
   const name = toNullableString(body.name);
   if (!name) return { error: "name is required" };
+
+  const type = toProjectType(body.type ?? "fast");
+  if (!type) return { error: `type must be one of ${PROJECT_TYPES.join(", ")}` };
 
   const status = String(body.status ?? "idea").trim() as ProjectStatus;
   if (!UI_STATUSES.includes(status)) {
     return { error: `status must be one of ${UI_STATUSES.join(", ")}` };
   }
+
+  const revenue = toScoreInt("revenue_potential", body.revenue_potential ?? 3);
+  if ("error" in revenue) return revenue;
+  const confidence = toScoreInt("confidence", body.confidence ?? 3);
+  if ("error" in confidence) return confidence;
+  const timeToCash = toScoreInt("time_to_cash", body.time_to_cash ?? 3);
+  if ("error" in timeToCash) return timeToCash;
+  const effort = toPositiveInt("effort_remaining", body.effort_remaining ?? 8);
+  if ("error" in effort) return effort;
+  const deadline = toIsoDate("deadline", body.deadline);
+  if ("error" in deadline) return deadline;
 
   const tasksRaw = body.tasks;
   const tasks: string[] = [];
@@ -99,8 +209,16 @@ function validateNewProject(body: Record<string, unknown>): { value: NewProject 
   return {
     value: {
       name,
+      type,
+      client: toNullableString(body.client),
+      revenue_potential: revenue.value,
+      confidence: confidence.value,
+      time_to_cash: timeToCash.value,
+      effort_remaining: effort.value,
       notes: toNullableString(body.notes ?? body.description),
       status,
+      next_action: toNullableString(body.next_action),
+      deadline: deadline.value,
       tasks: tasks.length ? tasks : undefined,
     },
   };
@@ -114,6 +232,34 @@ function validateProjectPatch(body: Record<string, unknown>): { value: ProjectPa
     if (!name) return { error: "name cannot be empty" };
     patch.name = name;
   }
+  if ("type" in body) {
+    const type = toProjectType(body.type);
+    if (!type) return { error: `type must be one of ${PROJECT_TYPES.join(", ")}` };
+    patch.type = type;
+  }
+  if ("client" in body) {
+    patch.client = toNullableString(body.client);
+  }
+  if ("revenue_potential" in body) {
+    const revenue = toScoreInt("revenue_potential", body.revenue_potential);
+    if ("error" in revenue) return revenue;
+    patch.revenue_potential = revenue.value;
+  }
+  if ("confidence" in body) {
+    const confidence = toScoreInt("confidence", body.confidence);
+    if ("error" in confidence) return confidence;
+    patch.confidence = confidence.value;
+  }
+  if ("time_to_cash" in body) {
+    const timeToCash = toScoreInt("time_to_cash", body.time_to_cash);
+    if ("error" in timeToCash) return timeToCash;
+    patch.time_to_cash = timeToCash.value;
+  }
+  if ("effort_remaining" in body) {
+    const effort = toPositiveInt("effort_remaining", body.effort_remaining);
+    if ("error" in effort) return effort;
+    patch.effort_remaining = effort.value;
+  }
   if ("notes" in body || "description" in body) {
     patch.notes = toNullableString(body.notes ?? body.description);
   }
@@ -123,6 +269,14 @@ function validateProjectPatch(body: Record<string, unknown>): { value: ProjectPa
       return { error: `status must be one of ${UI_STATUSES.join(", ")}` };
     }
     patch.status = status;
+  }
+  if ("next_action" in body) {
+    patch.next_action = toNullableString(body.next_action);
+  }
+  if ("deadline" in body) {
+    const deadline = toIsoDate("deadline", body.deadline);
+    if ("error" in deadline) return deadline;
+    patch.deadline = deadline.value;
   }
 
   return { value: patch };
@@ -217,20 +371,22 @@ function bearerToken(req: Request): string | null {
 /** Build the Express app. Caller is responsible for listen(). */
 export function createServer(config: Config): express.Express {
   const app = express();
-  app.use(express.json());
+  app.set("trust proxy", 1);
+  app.use(express.json({ limit: "64kb" }));
 
   app.get("/api/health", (_req, res) => {
     res.json({ ok: true });
   });
 
   // --- Public auth routes ---
-  app.post("/api/auth/signup", async (req, res) => {
+  app.post("/api/auth/signup", rateLimit(10, RATE_WINDOW_MS, (req) => `signup:${req.ip}`), async (req, res) => {
     try {
       const body = req.body ?? {};
       const email = String(body.email ?? "").trim();
       const password = String(body.password ?? "");
       const name = toNullableString(body.name);
       const result = await signup(config, email, password, name);
+      setSessionCookie(res, result.token);
       res.status(201).json(result);
     } catch (err) {
       if (err instanceof AuthError) return res.status(400).json({ error: err.message });
@@ -238,12 +394,13 @@ export function createServer(config: Config): express.Express {
     }
   });
 
-  app.post("/api/auth/login", async (req, res) => {
+  app.post("/api/auth/login", rateLimit(10, RATE_WINDOW_MS, (req) => `login:${req.ip}`), async (req, res) => {
     try {
       const body = req.body ?? {};
       const email = String(body.email ?? "").trim();
       const password = String(body.password ?? "");
       const result = await login(email, password);
+      setSessionCookie(res, result.token);
       res.json(result);
     } catch (err) {
       if (err instanceof AuthError) return res.status(401).json({ error: err.message });
@@ -252,23 +409,31 @@ export function createServer(config: Config): express.Express {
   });
 
   const requireAuth = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
-    const token = bearerToken(req);
+    const bearer = bearerToken(req);
+    const cookieToken = parseCookie(req, SESSION_COOKIE);
+    const token = bearer ?? cookieToken;
     if (!token) {
+      clearSessionCookie(res);
       res.status(401).json({ error: "Unauthorized" });
       return;
     }
     const user = await resolveUserFromToken(token);
     if (!user) {
+      clearSessionCookie(res);
       res.status(401).json({ error: "Unauthorized" });
       return;
+    }
+    if (bearer && !cookieToken) {
+      setSessionCookie(res, bearer);
     }
     req.userId = user.id;
     next();
   };
 
   app.post("/api/auth/logout", requireAuth, async (req, res) => {
-    const token = bearerToken(req);
+    const token = bearerToken(req) ?? parseCookie(req, SESSION_COOKIE);
     if (token) await logout(token);
+    clearSessionCookie(res);
     res.json({ ok: true });
   });
 
@@ -507,7 +672,10 @@ export function createServer(config: Config): express.Express {
     res.json({ enabled: isAiConfigured(config), model: config.anthropicModel });
   });
 
-  api.post("/chat", async (req, res) => {
+  api.post(
+    "/chat",
+    rateLimit(20, RATE_WINDOW_MS, (req) => `chat:${req.userId ?? req.ip}`),
+    async (req, res) => {
     if (!isAiConfigured(config)) {
       return res.status(501).json({
         error: "AI agent not configured. Set ANTHROPIC_API_KEY to enable it.",
@@ -527,14 +695,17 @@ export function createServer(config: Config): express.Express {
       return res.status(400).json({ error: "no valid messages" });
     }
     try {
-      const result = await chat(config, req.userId!, messages);
+      const result = await chat(config, req.userId!, messages, {
+        allowWrite: Boolean((req.body ?? {}).allow_write),
+      });
       res.json({ reply: result.reply, actions: result.actions });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       console.error("[ai] chat failed:", msg);
       res.status(502).json({ error: `AI request failed: ${msg}` });
     }
-  });
+    }
+  );
 
   app.use("/api", api);
   app.use(express.static(PUBLIC_DIR));

@@ -154,9 +154,17 @@ export type ProjectPatch = Partial<Pick<Project, ProjectEditableColumn>>;
 
 export interface NewProject {
   name: string;
+  type?: ProjectType;
+  client?: string | null;
+  revenue_potential?: number;
+  confidence?: number;
+  time_to_cash?: number;
+  effort_remaining?: number;
   /** Idea description — what you're exploring or building toward. */
   notes?: string | null;
   status?: ProjectStatus;
+  next_action?: string | null;
+  deadline?: string | null;
   /** Optional initial tasks to seed with the idea. */
   tasks?: string[];
 }
@@ -495,6 +503,49 @@ export async function markCheckinNudgeSent(userId: number, date: string): Promis
   );
 }
 
+function nudgeClaimKey(kind: "daily" | "checkin", userId: number, date: string): string {
+  return `nudge:${kind}:${userId}:${date}`;
+}
+
+export async function claimUserNudge(
+  userId: number,
+  kind: "daily" | "checkin",
+  date: string
+): Promise<boolean> {
+  const result = await getPool().query<{ key: string }>(
+    `INSERT INTO app_meta (key, value)
+     VALUES ($1, 'sending')
+     ON CONFLICT DO NOTHING
+     RETURNING key`,
+    [nudgeClaimKey(kind, userId, date)]
+  );
+  return result.rows.length > 0;
+}
+
+export async function completeUserNudge(
+  userId: number,
+  kind: "daily" | "checkin",
+  date: string
+): Promise<void> {
+  if (kind === "daily") {
+    await markDailyNudgeSent(userId, date);
+  } else {
+    await markCheckinNudgeSent(userId, date);
+  }
+
+  await getPool().query("UPDATE app_meta SET value = 'sent' WHERE key = $1", [
+    nudgeClaimKey(kind, userId, date),
+  ]);
+}
+
+export async function releaseUserNudgeClaim(
+  userId: number,
+  kind: "daily" | "checkin",
+  date: string
+): Promise<void> {
+  await getPool().query("DELETE FROM app_meta WHERE key = $1", [nudgeClaimKey(kind, userId, date)]);
+}
+
 // --- Sessions ---
 
 export async function createSession(userId: number, token: string, expiresAt: Date): Promise<void> {
@@ -563,15 +614,15 @@ export async function addProject(userId: number, p: NewProject): Promise<Project
     [
       userId,
       p.name,
-      "fast",
-      null,
-      3,
-      3,
-      3,
-      8,
+      p.type ?? "fast",
+      p.client ?? null,
+      p.revenue_potential ?? 3,
+      p.confidence ?? 3,
+      p.time_to_cash ?? 3,
+      p.effort_remaining ?? 8,
       p.status ?? "idea",
-      null,
-      null,
+      p.next_action ?? null,
+      p.deadline ?? null,
       p.notes ?? null,
       ts,
       ts,

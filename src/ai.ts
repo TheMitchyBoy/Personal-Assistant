@@ -12,12 +12,14 @@ import {
   getProjectWithTasks,
   getStalledProjects,
   getUserById,
+  PROJECT_TYPES,
   updateProject,
   type NewProject,
   type ProjectPatch,
+  type ProjectType,
   type ProjectStatus,
 } from "./db.js";
-import { allocateDay } from "./scoring.js";
+import { allocateDay, scoreProject } from "./scoring.js";
 
 export interface ChatMessage {
   role: "user" | "assistant";
@@ -46,13 +48,19 @@ const TOOLS: Anthropic.Tool[] = [
   {
     name: "create_idea",
     description:
-      "Add a new idea the user wants to explore. Include a short description and 2-5 concrete starter tasks when possible.",
+      "Add a new project the user wants to pursue. Include type, next action, and 2-5 concrete starter tasks when possible.",
     input_schema: {
       type: "object",
       properties: {
         name: { type: "string", description: "Short idea title" },
         description: { type: "string", description: "What the idea is about and why it matters" },
+        type: { type: "string", enum: ["fast", "passive"] },
         status: { type: "string", enum: ["idea", "active", "blocked", "shipped", "archived"] },
+        revenue_potential: { type: "integer", description: "1-5 revenue upside" },
+        confidence: { type: "integer", description: "1-5 confidence someone pays" },
+        time_to_cash: { type: "integer", description: "1-5 where 1 means money soon" },
+        effort_remaining: { type: "integer", description: "Estimated hours remaining" },
+        next_action: { type: "string", description: "Single concrete next step" },
         tasks: {
           type: "array",
           items: { type: "string" },
@@ -71,7 +79,13 @@ const TOOLS: Anthropic.Tool[] = [
         id: { type: "integer" },
         name: { type: "string" },
         description: { type: "string" },
+        type: { type: "string", enum: ["fast", "passive"] },
         status: { type: "string", enum: ["idea", "active", "blocked", "shipped", "archived"] },
+        revenue_potential: { type: "integer" },
+        confidence: { type: "integer" },
+        time_to_cash: { type: "integer" },
+        effort_remaining: { type: "integer" },
+        next_action: { type: "string" },
       },
       required: ["id"],
     },
@@ -127,19 +141,53 @@ function parseTasks(v: unknown): string[] {
   return v.map((t) => (typeof t === "string" ? t.trim() : "")).filter(Boolean);
 }
 
+function toProjectType(v: unknown): ProjectType | null {
+  const value = String(v ?? "").trim() as ProjectType;
+  return PROJECT_TYPES.includes(value) ? value : null;
+}
+
+function toScoreInt(v: unknown): number | null {
+  const n = toInt(v);
+  return n !== null && n >= 1 && n <= 5 ? n : null;
+}
+
+function toEffort(v: unknown): number | null {
+  const n = Number(v);
+  if (!Number.isFinite(n) || n < 1) return null;
+  return Math.round(n);
+}
+
 function validateNewIdea(body: Record<string, unknown>): { value: NewProject } | { error: string } {
   const name = toNullableString(body.name);
   if (!name) return { error: "name is required" };
+  const type = toProjectType(body.type ?? "fast");
+  if (!type) return { error: `type must be one of ${PROJECT_TYPES.join(", ")}` };
   const status = String(body.status ?? "idea").trim() as ProjectStatus;
   if (!UI_STATUSES.includes(status)) {
     return { error: `status must be one of ${UI_STATUSES.join(", ")}` };
   }
   const tasks = parseTasks(body.tasks);
+  const revenue = toScoreInt(body.revenue_potential ?? 3);
+  const confidence = toScoreInt(body.confidence ?? 3);
+  const timeToCash = toScoreInt(body.time_to_cash ?? 3);
+  const effort = toEffort(body.effort_remaining ?? 8);
+  if (revenue === null || confidence === null || timeToCash === null || effort === null) {
+    return {
+      error:
+        "revenue_potential, confidence, and time_to_cash must be 1-5, and effort_remaining must be >= 1",
+    };
+  }
   return {
     value: {
       name,
+      type,
+      revenue_potential: revenue,
+      confidence,
+      time_to_cash: timeToCash,
+      effort_remaining: effort,
       notes: toNullableString(body.description ?? body.notes),
       status,
+      next_action: toNullableString(body.next_action),
       tasks: tasks.length ? tasks : undefined,
     },
   };
@@ -152,6 +200,11 @@ function validateIdeaPatch(body: Record<string, unknown>): { value: ProjectPatch
     if (!name) return { error: "name cannot be empty" };
     patch.name = name;
   }
+  if ("type" in body) {
+    const type = toProjectType(body.type);
+    if (!type) return { error: `type must be one of ${PROJECT_TYPES.join(", ")}` };
+    patch.type = type;
+  }
   if ("description" in body || "notes" in body) {
     patch.notes = toNullableString(body.description ?? body.notes);
   }
@@ -161,6 +214,29 @@ function validateIdeaPatch(body: Record<string, unknown>): { value: ProjectPatch
       return { error: `status must be one of ${UI_STATUSES.join(", ")}` };
     }
     patch.status = status;
+  }
+  if ("revenue_potential" in body) {
+    const revenue = toScoreInt(body.revenue_potential);
+    if (revenue === null) return { error: "revenue_potential must be 1-5" };
+    patch.revenue_potential = revenue;
+  }
+  if ("confidence" in body) {
+    const confidence = toScoreInt(body.confidence);
+    if (confidence === null) return { error: "confidence must be 1-5" };
+    patch.confidence = confidence;
+  }
+  if ("time_to_cash" in body) {
+    const timeToCash = toScoreInt(body.time_to_cash);
+    if (timeToCash === null) return { error: "time_to_cash must be 1-5" };
+    patch.time_to_cash = timeToCash;
+  }
+  if ("effort_remaining" in body) {
+    const effort = toEffort(body.effort_remaining);
+    if (effort === null) return { error: "effort_remaining must be >= 1" };
+    patch.effort_remaining = effort;
+  }
+  if ("next_action" in body) {
+    patch.next_action = toNullableString(body.next_action);
   }
   return { value: patch };
 }
@@ -253,12 +329,13 @@ export async function buildSystemPrompt(userId: number): Promise<string> {
   const lines: string[] = [];
 
   lines.push(
-    "You are the AI assistant for Concierge — a productivity partner for capturing ideas and breaking them into actionable tasks.",
+    "You are the AI assistant for Concierge — a business analyst that helps the user choose the right project and sharpen the next action.",
     "",
     "How you work:",
-    "- The user tracks **ideas** (general concepts, projects, experiments) each with a description and a list of **tasks**.",
-    "- Your main job: suggest concrete, small tasks that move an idea forward. Think next physical actions, not vague goals.",
-    "- When an idea is thin, ask one clarifying question OR propose 3-5 starter tasks and offer to add them.",
+    "- The user tracks **projects** with a type (`fast` or `passive`), a single next action, and optional supporting tasks.",
+    "- Fast projects are income work and always take priority over passive projects.",
+    "- Your main job: sharpen the next action, improve prioritization, and suggest concrete small tasks when useful.",
+    "- When a project is thin, ask one clarifying question OR propose 3-5 starter tasks and offer to add them.",
     "- Prefer adding tasks via tools when the user agrees ('yes', 'add those', 'sounds good').",
     "- Be concise. No motivational fluff. Tasks should be doable in an evening or weekend session.",
     "",
@@ -287,8 +364,9 @@ export async function buildSystemPrompt(userId: number): Promise<string> {
     for (const idea of ideas) {
       const open = idea.tasks.filter((t) => !t.done);
       const done = idea.tasks.filter((t) => t.done);
-      lines.push(`- #${idea.id} [${idea.status}] ${idea.name}`);
+      lines.push(`- #${idea.id} [${idea.type}/${idea.status}] ${idea.name} — score ${scoreProject(idea).toFixed(1)}`);
       if (idea.notes) lines.push(`    description: ${idea.notes}`);
+      if (idea.next_action) lines.push(`    next action: ${idea.next_action}`);
       if (open.length) {
         lines.push(`    open tasks: ${open.map((t) => `"${t.title}"`).join("; ")}`);
       } else {
@@ -301,14 +379,19 @@ export async function buildSystemPrompt(userId: number): Promise<string> {
 
   lines.push("# Suggested focus today");
   if (allocation.primary) {
-    const { project, task } = allocation.primary;
-    lines.push(`- #${project.id} ${project.name} → ${task?.title ?? "(add a task)"}`);
+    const { project, action, score } = allocation.primary;
+    lines.push(`- Primary fast project: #${project.id} ${project.name} → ${action ?? "(set a next action)"} [score ${score.toFixed(1)}]`);
   } else {
-    lines.push("- No open tasks — suggest new ideas or tasks for existing ideas.");
+    lines.push("- No fast project is ready — help the user define or activate one.");
   }
   if (allocation.secondary) {
     lines.push(
-      `- Spare time: #${allocation.secondary.project.id} ${allocation.secondary.project.name}`
+      `- Spare time passive: #${allocation.secondary.project.id} ${allocation.secondary.project.name} → ${allocation.secondary.action ?? "(set a next action)"}`
+    );
+  }
+  if (allocation.deadlineWarnings.length > 0) {
+    lines.push(
+      `- Deadlines soon: ${allocation.deadlineWarnings.map((p) => `${p.name} (${p.deadline})`).join("; ")}`
     );
   }
   if (stalled.length > 0) {
@@ -380,7 +463,8 @@ export async function suggestTasksForProject(
 export async function chat(
   config: Config,
   userId: number,
-  messages: ChatMessage[]
+  messages: ChatMessage[],
+  options: { allowWrite: boolean }
 ): Promise<ChatResult> {
   if (!isAiConfigured(config)) {
     throw new Error("AI agent is not configured (set ANTHROPIC_API_KEY).");
@@ -396,14 +480,19 @@ export async function chat(
   const actions: ChatAction[] = [];
   let rounds = 0;
   const system = await buildSystemPrompt(userId);
+  const systemWithMode = `${system}\n\n# Mutation mode\n${
+    options.allowWrite
+      ? "The user explicitly allowed writes for this request. Use tools only when the latest user message clearly asks to create or update data."
+      : "Read-only mode. Do not use tools or imply that you changed saved data in this reply."
+  }`;
 
   while (rounds < MAX_TOOL_ROUNDS) {
     rounds += 1;
     const response = await client.messages.create({
       model: config.anthropicModel,
       max_tokens: MAX_OUTPUT_TOKENS,
-      system,
-      tools: TOOLS,
+      system: systemWithMode,
+      tools: options.allowWrite ? TOOLS : undefined,
       messages: apiMessages,
     });
 
